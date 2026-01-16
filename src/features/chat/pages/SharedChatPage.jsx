@@ -137,7 +137,7 @@ export default function SharedChat() {
   }
 
   return (
-    <div className={`min-h-screen transition-colors duration-300 ${theme === 'dark' ? 'bg-zinc-900 text-white' : 'bg-slate-100 text-slate-900'
+    <div className={`h-screen flex flex-col transition-colors duration-300 ${theme === 'dark' ? 'bg-zinc-900 text-white' : 'bg-slate-100 text-slate-900'
       }`}>
       {/* Header */}
       <div className={`backdrop-blur-sm border-b px-4 py-3 transition-colors duration-300 ${theme === 'dark'
@@ -188,8 +188,9 @@ export default function SharedChat() {
         </div>
       </div>
 
-      {/* Chat Content */}
-      <div className="max-w-4xl mx-auto p-6">
+      {/* Chat Content - Scrollable */}
+      <div className="flex-1 overflow-y-auto">
+        <div className="max-w-4xl mx-auto p-6">
         <div className={`rounded-2xl p-6 space-y-6 transition-colors duration-300 ${theme === 'dark'
             ? 'bg-zinc-800/50'
             : 'bg-white border border-slate-200'
@@ -250,6 +251,7 @@ export default function SharedChat() {
               Start Chatting with Relyce AI
             </button>
           </div>
+        </div>
         </div>
       </div>
     </div>
