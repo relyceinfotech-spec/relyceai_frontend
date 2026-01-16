@@ -7,6 +7,7 @@ import ChatWindowHeader from './ChatWindowHeader';
 import MessageComponent from './MessageComponent';
 import TypingIndicator from './TypingIndicator';
 import { LoadingSpinner } from '../../../components/loading';
+import BotSkeletonLoader from './BotSkeletonLoader';
 import logo from '../../../assets/logo.svg';
 
 const ChatWindow = memo(function ChatWindow({
@@ -400,6 +401,13 @@ const ChatWindow = memo(function ChatWindow({
                 isLastMessage={index === messages.length - 1}
               />
             ))}
+            
+            {/* Show skeleton loader when bot is thinking (accepted request but no message yet) */}
+            {botTyping && messages.length > 0 && messages[messages.length - 1].role === 'user' && (
+              <div className="animate-fade-in">
+                <BotSkeletonLoader />
+              </div>
+            )}
           </div>
         )}
 
