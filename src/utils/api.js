@@ -7,7 +7,10 @@
  * Set VITE_API_BASE_URL in your .env file
  */
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
-const WS_BASE_URL = API_BASE_URL.replace('http', 'ws');
+console.log("[Debug] API_BASE_URL =", API_BASE_URL); // Log for production debugging
+const WS_BASE_URL = API_BASE_URL.startsWith('https')
+  ? API_BASE_URL.replace('https', 'wss')
+  : API_BASE_URL.replace('http', 'ws');
 
 /**
  * Generic fetch wrapper for FastAPI endpoints
@@ -95,6 +98,7 @@ export async function* streamChatMessage(message, sessionId, userId, chatMode = 
     const response = await fetch(`${API_BASE_URL}/chat/stream`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
       body: JSON.stringify(body),
     });
     
