@@ -1,32 +1,53 @@
-import { doc, setDoc, getDoc, collection, updateDoc, query, getDocs, serverTimestamp } from 'firebase/firestore';
+import { doc, setDoc, getDoc, collection, updateDoc, query, getDocs, serverTimestamp, runTransaction } from 'firebase/firestore';
 import { db } from '../../../utils/firebaseConfig';
 import { createUserFolderStructure } from '../../files/services/fileService';
 import { MEMBERSHIP_PLANS } from '../../membership/services/membershipService';
 
 export async function generateUserId() {
     const counterRef = doc(db, 'counters', 'userIds');
-    const counterSnap = await getDoc(counterRef);
-    let nextIdNumber = 1;
+    
+    try {
+        // Use a transaction to ensure atomic read-modify-write
+        const generatedId = await runTransaction(db, async (transaction) => {
+            const counterSnap = await transaction.get(counterRef);
+            let nextIdNumber = 1;
 
-    if (counterSnap.exists()) {
-        const currentCounter = counterSnap.data().currentId || 0;
-        nextIdNumber = currentCounter + 1;
-        await updateDoc(counterRef, { currentId: nextIdNumber, lastUpdated: serverTimestamp() });
-    } else {
-        const usersRef = collection(db, 'users');
-        const snapshot = await getDocs(usersRef);
-        let maxIdNumber = 0;
-        snapshot.docs.forEach(userDoc => {
-            const userData = userDoc.data();
-            if (userData.uniqueUserId?.startsWith('RA')) {
-                const idNumber = parseInt(userData.uniqueUserId.substring(2));
-                if (!isNaN(idNumber) && idNumber > maxIdNumber) maxIdNumber = idNumber;
+            if (counterSnap.exists()) {
+                const currentCounter = counterSnap.data().currentId || 0;
+                nextIdNumber = currentCounter + 1;
+                transaction.update(counterRef, { currentId: nextIdNumber, lastUpdated: new Date() });
+            } else {
+                // Counter doesn't exist - scan users for max ID (only happens once)
+                console.log('[generateUserId] Counter does not exist, scanning users...');
+                const usersRef = collection(db, 'users');
+                const snapshot = await getDocs(usersRef);
+                let maxIdNumber = 0;
+                snapshot.docs.forEach(userDoc => {
+                    const userData = userDoc.data();
+                    if (userData.uniqueUserId?.startsWith('RA')) {
+                        const idNumber = parseInt(userData.uniqueUserId.substring(2));
+                        if (!isNaN(idNumber) && idNumber > maxIdNumber) maxIdNumber = idNumber;
+                    }
+                });
+                nextIdNumber = maxIdNumber + 1;
+                transaction.set(counterRef, { currentId: nextIdNumber, lastUpdated: new Date() });
+                console.log('[generateUserId] Created counter with currentId:', nextIdNumber);
             }
+            
+            return `RA${nextIdNumber.toString().padStart(3, '0')}`;
         });
-        nextIdNumber = maxIdNumber + 1;
-        await setDoc(counterRef, { currentId: nextIdNumber, lastUpdated: serverTimestamp() });
+        
+        console.log('[generateUserId] Generated unique ID:', generatedId);
+        return generatedId;
+    } catch (error) {
+        console.error('[generateUserId] Transaction failed:', error);
+        // Fallback: Use timestamp + random suffix for uniqueness
+        const timestamp = Date.now();
+        const randomSuffix = Math.random().toString(36).substring(2, 5).toUpperCase();
+        const fallbackId = `RA${timestamp.toString().slice(-4)}${randomSuffix}`;
+        console.log('[generateUserId] Using fallback ID:', fallbackId);
+        return fallbackId;
     }
-    return `RA${nextIdNumber.toString().padStart(3, '0')}`;
 }
 
 export async function createUserProfile(userData, membershipPlan = 'free') {
@@ -106,15 +127,28 @@ export async function ensureUserHasId(userId) {
     try {
         const userDocRef = doc(db, 'users', userId);
         const userDoc = await getDoc(userDocRef);
-        if (!userDoc.exists()) return null;
+        if (!userDoc.exists()) {
+            console.warn('[ensureUserHasId] User document does not exist for:', userId);
+            return null;
+        }
 
         const userData = userDoc.data();
-        if (userData.uniqueUserId) return userData.uniqueUserId;
+        if (userData.uniqueUserId) {
+            return userData.uniqueUserId;
+        }
 
+        console.log('[ensureUserHasId] Generating new uniqueUserId for user:', userId);
         const uniqueUserId = await generateUserId();
+        console.log('[ensureUserHasId] Generated uniqueUserId:', uniqueUserId);
+        
         await updateDoc(userDocRef, { uniqueUserId, updatedAt: serverTimestamp() });
+        console.log('[ensureUserHasId] Successfully assigned uniqueUserId:', uniqueUserId, 'to user:', userId);
+        
         return uniqueUserId;
-    } catch { return null; }
+    } catch (error) {
+        console.error('[ensureUserHasId] Error assigning uniqueUserId:', error);
+        return null;
+    }
 }
 
 export async function getUserRole(userId) {

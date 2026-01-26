@@ -63,6 +63,32 @@ function AppContent() {
                     const def = result.personalities.find(p => p.is_default && p.id === 'default_relyce') || result.personalities[0];
                     setActivePersonality(def);
                 }
+            } else {
+                // Fallback to default personality if API fails
+                console.warn('[ChatPage] Failed to fetch personalities, using default');
+                const defaultPersonality = {
+                    id: 'default_relyce',
+                    name: 'Relyce AI',
+                    description: 'Professional, helpful AI assistant',
+                    is_default: true
+                };
+                setPersonalities([defaultPersonality]);
+                if (!activePersonality) {
+                    setActivePersonality(defaultPersonality);
+                }
+            }
+        }).catch(err => {
+            console.error('[ChatPage] Error fetching personalities:', err);
+            // Fallback to default personality on error
+            const defaultPersonality = {
+                id: 'default_relyce',
+                name: 'Relyce AI',
+                description: 'Professional, helpful AI assistant',
+                is_default: true
+            };
+            setPersonalities([defaultPersonality]);
+            if (!activePersonality) {
+                setActivePersonality(defaultPersonality);
             }
         });
     }
