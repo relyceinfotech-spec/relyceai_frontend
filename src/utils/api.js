@@ -371,14 +371,15 @@ export async function fetchPersonalities(userId) {
 /**
  * Create Personality
  */
-export async function createPersonality(userId, name, description, prompt) {
+export async function createPersonality(userId, name, description, prompt, contentMode = 'hybrid') {
   try {
     return await apiFetch(`/personalities?user_id=${userId}`, {
       method: 'POST',
       body: JSON.stringify({
         name,
         description,
-        prompt
+        prompt,
+        content_mode: contentMode
       }),
     });
   } catch (error) {
@@ -390,14 +391,15 @@ export async function createPersonality(userId, name, description, prompt) {
 /**
  * Update Personality
  */
-export async function updatePersonality(userId, personalityId, name, description, prompt) {
+export async function updatePersonality(userId, personalityId, name, description, prompt, contentMode = 'hybrid') {
     try {
       return await apiFetch(`/personalities/${personalityId}?user_id=${userId}`, {
         method: 'PUT',
         body: JSON.stringify({
           name,
           description,
-          prompt
+          prompt,
+          content_mode: contentMode
         }),
       });
     } catch (error) {

@@ -79,10 +79,10 @@ export default function Footer() {
             &copy; {new Date().getFullYear()} Relyce Infotech. All rights reserved.
           </p>
           <div className="flex gap-6 text-sm text-zinc-500">
-            <Link to="#" className="hover:text-white hover:transition-colors">
-              Terms of Service
+            <Link to="/terms" className="hover:text-white hover:transition-colors">
+              Terms of Use
             </Link>
-            <Link to="#" className="hover:text-white hover:transition-colors">
+            <Link to="/privacy" className="hover:text-white hover:transition-colors">
               Privacy Policy
             </Link>
           </div>

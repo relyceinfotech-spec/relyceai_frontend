@@ -34,6 +34,8 @@ const Contact = createLazyComponent(() => import("./pages/ContactPage.jsx"), 'Co
 const Settings = createLazyComponent(() => import("./features/settings/pages/SettingsPage.jsx"), 'Settings');
 const UserFiles = createLazyComponent(() => import("./features/files/pages/UserFilesPage.jsx"), 'UserFiles');
 const SharedChat = createLazyComponent(() => import("./features/chat/pages/SharedChatPage.jsx"), 'SharedChat');
+const TermsPage = createLazyComponent(() => import("./pages/TermsPage.jsx"), 'TermsPage');
+const PrivacyPage = createLazyComponent(() => import("./pages/PrivacyPage.jsx"), 'PrivacyPage');
 const AdminDashboard = createLazyComponent(() => import("./features/admin/pages/AdminDashboard.jsx"), 'AdminDashboard');
 const SuperAdminDashboard = createLazyComponent(() => import("./features/admin/pages/SuperAdminDashboard.jsx"), 'SuperAdminDashboard');
 const VisualizeData = createLazyComponent(() => import("./features/visualize/pages/NivoVisualizeData.jsx"), 'VisualizeData');
@@ -115,6 +117,8 @@ const router = createBrowserRouter([
       { path: "/files", element: <LazyWrapper><UserFiles /></LazyWrapper> },
       { path: "/library", element: <ProtectedRoute><LazyWrapper><LibraryPage /></LazyWrapper></ProtectedRoute> },
       { path: "/shared/:shareId", element: <LazyWrapper><SharedChat /></LazyWrapper> },
+      { path: "/terms", element: <LazyWrapper><TermsPage /></LazyWrapper> },
+      { path: "/privacy", element: <LazyWrapper><PrivacyPage /></LazyWrapper> },
       { path: "/super", element: <AdminProtectedRoute><LazyWrapper><AdminDashboard /></LazyWrapper></AdminProtectedRoute> },
       { path: "/super/*", element: <AdminProtectedRoute><LazyWrapper><AdminDashboard /></LazyWrapper></AdminProtectedRoute> },
       { path: "/boss", element: <SuperAdminProtectedRoute requireSuperAdmin><LazyWrapper><SuperAdminDashboard /></LazyWrapper></SuperAdminProtectedRoute> },

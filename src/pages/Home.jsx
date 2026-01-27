@@ -7,6 +7,8 @@ import FinalCTASection from '../components/Home-sections/FinalCTASection';
 
 import { Sparkles, Bot, Rocket, Zap, BookOpenCheck, ShieldCheck, UploadCloud, MessageCircle, Users } from 'lucide-react';
 
+import FeatureShowcase from '../components/Home-sections/FeatureShowcase';
+
 export default function Home() {
   
   return (
@@ -15,11 +17,15 @@ export default function Home() {
       {/* Hero Section */}
       <HeroSection/>
 
+
       {/* Features Section */}
       <FeaturesSection />
 
       {/* How It Works Section */}
       <HowItWorksSection />
+
+      {/* Feature Showcase (Carousel) */}
+      <FeatureShowcase />
 
       {/* Final CTA Section */}
       <FinalCTASection />

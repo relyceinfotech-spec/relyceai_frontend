@@ -6,7 +6,7 @@ import ChatWindowHeader from '../components/ChatWindowHeader.jsx'; // Import the
 import { useAuth } from '../../../context/AuthContext.jsx';
 import { LoadingSpinner } from '../../../components/loading';
 import { generateChatPDF } from '../../../utils/pdfGenerator.js';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { db } from '../../../utils/firebaseConfig.js';
 import {
   collection,
@@ -48,16 +48,24 @@ function AppContent() {
   // Personality State
   const [personalities, setPersonalities] = useState([]);
   const [activePersonality, setActivePersonality] = useState(null);
+  const location = useLocation(); // Track navigation for refetching
 
   // Use ref to prevent unnecessary navigation calls
 
   // Fetch Personalities
   useEffect(() => {
-    if (userProfile?.uniqueUserId || user?.uid) {
-        const uid = userProfile?.uniqueUserId || user?.uid;
+    if (user?.uid) {
+        const uid = user.uid;
         ChatService.getPersonalities(uid).then(result => {
             if (result.success && result.personalities) {
                 setPersonalities(result.personalities);
+                
+                // Update active personality if it exists, to reflect name changes
+                if (activePersonality) {
+                    const updated = result.personalities.find(p => p.id === activePersonality.id);
+                    if (updated) setActivePersonality(updated);
+                }
+                
                 // Set default active if none selected
                 if (!activePersonality) {
                     const def = result.personalities.find(p => p.is_default && p.id === 'default_relyce') || result.personalities[0];
@@ -92,7 +100,7 @@ function AppContent() {
             }
         });
     }
-  }, [userProfile?.uniqueUserId, user?.uid]);
+  }, [user?.uid, location.key]); // Refetch on navigation (location.key changes)
 
 
 
