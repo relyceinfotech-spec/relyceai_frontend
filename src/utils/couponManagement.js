@@ -10,7 +10,7 @@ export const saveCoupon = async (couponData) => {
       updatedAt: new Date()
     });
     return { success: true, id: docRef.id, message: 'Coupon saved successfully' };
-  } catch (error) {
+  } catch {
     return { success: false, message: 'Failed to save coupon' };
   }
 };

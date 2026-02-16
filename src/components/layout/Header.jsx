@@ -88,7 +88,6 @@ export default function Header() {
   }, [isMenuOpen]);
 
   const toggleMenu = () => setIsMenuOpen(!isMenuOpen);
-  const handleNewChat = () => alert("Start a new chat");
   const handleLogout = async () => {
     try {
       await signOut(auth);
@@ -236,7 +235,7 @@ export default function Header() {
           ) : (
             <div className="flex items-center gap-2">
               <button onClick={() => navigate("/login")} type="button" className="px-5 py-2.5 text-lg font-medium text-gray-300 hover:text-white transition-colors">Login</button>
-              <button onClick={() => navigate("/Signup")} type="button" className="px-5 py-2.5 text-lg bg-emerald-500 text-black font-semibold rounded-lg hover:bg-emerald-400 transform transition-transform hover:-translate-y-0.5">Sign Up</button>
+              <button onClick={() => navigate("/signup")} type="button" className="px-5 py-2.5 text-lg bg-emerald-500 text-black font-semibold rounded-lg hover:bg-emerald-400 transform transition-transform hover:-translate-y-0.5">Sign Up</button>
             </div>
           )}
         </div>
