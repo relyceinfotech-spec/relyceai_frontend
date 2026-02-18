@@ -23,7 +23,7 @@ export function validatePassword(password) {
         hasUppercase: /[A-Z]/.test(password),
         hasLowercase: /[a-z]/.test(password),
         hasNumber: /[0-9]/.test(password),
-        hasSpecial: /[!@#$%^&*()_+\-=\[\]{}|;:,.<>?]/.test(password)
+        hasSpecial: /[^A-Za-z0-9]/.test(password)
     };
 
     const errors = [];
@@ -70,14 +70,14 @@ export function getPasswordStrength(password) {
     if (/[a-z]/.test(password)) score += 1;
     if (/[A-Z]/.test(password)) score += 1;
     if (/[0-9]/.test(password)) score += 1;
-    if (/[!@#$%^&*()_+\-=\[\]{}|;:,.<>?]/.test(password)) score += 1;
+    if (/[^A-Za-z0-9]/.test(password)) score += 1;
 
     // Variety bonus (mix of character types)
     const types = [
         /[a-z]/.test(password),
         /[A-Z]/.test(password),
         /[0-9]/.test(password),
-        /[!@#$%^&*()_+\-=\[\]{}|;:,.<>?]/.test(password)
+        /[^A-Za-z0-9]/.test(password)
     ].filter(Boolean).length;
 
     if (types >= 4) score += 2;

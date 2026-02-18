@@ -4,7 +4,7 @@ import { sendChatMessage, checkBackendHealth, fetchPersonalities, createPersonal
 
 class ChatService {
   static async addMessage(userId, sessionId, role, content, files = []) {
-    const processedFiles = files.map(({ file, ...metadata }) => metadata);
+    const processedFiles = files.map(({ file, ...metadata }) => (void file, metadata));
 
     if (!sessionId || !userId) return Date.now().toString();
 

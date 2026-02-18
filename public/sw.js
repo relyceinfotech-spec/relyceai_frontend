@@ -135,7 +135,7 @@ self.addEventListener('fetch', (event) => {
                 }).catch(() => { });
             }
             return freshResponse;
-          } catch (error) {
+          } catch {
             // If fetch fails, return cached version
             if (cachedResponse) {
               return cachedResponse;

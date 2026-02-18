@@ -217,7 +217,7 @@ export async function* streamChatMessage(message, sessionId, userId, chatMode = 
           } else if (data.type === 'error') {
             throw new Error(data.content);
           }
-        } catch (e) {
+        } catch {
           console.warn('Failed to parse SSE line:', line);
         }
       }
