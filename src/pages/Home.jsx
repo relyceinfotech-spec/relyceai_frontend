@@ -5,7 +5,7 @@ import FeaturesSection from '../components/Home-sections/FeaturesSection';
 import HowItWorksSection from '../components/Home-sections/HowItWorksSection';
 import FinalCTASection from '../components/Home-sections/FinalCTASection';
 
-import { Sparkles, Bot, Rocket, Zap, BookOpenCheck, ShieldCheck, UploadCloud, MessageCircle, Users } from 'lucide-react';
+
 
 import FeatureShowcase from '../components/Home-sections/FeatureShowcase';
 

@@ -1,4 +1,4 @@
-﻿// src/utils/api.js
+// src/utils/api.js
 // FastAPI Backend Integration Layer
 // Production-ready REST API and WebSocket communication
 import { auth } from './firebaseConfig';
@@ -19,6 +19,19 @@ const RAG_BASE_URL = normalizeLocalhost(
 const WS_BASE_URL = API_BASE_URL.startsWith('https')
   ? API_BASE_URL.replace('https', 'wss')
   : API_BASE_URL.replace('http', 'ws');
+
+async function fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), Math.max(1000, Number(timeoutMs) || 30000));
+  try {
+    return await fetch(url, {
+      ...options,
+      signal: controller.signal,
+    });
+  } finally {
+    clearTimeout(timeout);
+  }
+}
 
 /**
  * Generic fetch wrapper for FastAPI endpoints
@@ -121,7 +134,7 @@ function normalizePersonalityForSend(personality) {
   };
 }
 
-export async function sendChatMessage(message, sessionId, userId, chatMode = 'normal', personality = null, userSettings = null) {
+export async function sendChatMessage(message, sessionId, userId, chatMode = 'smart', personality = null, userSettings = null) {
   try {
     const body = {
       message,
@@ -149,7 +162,16 @@ export async function sendChatMessage(message, sessionId, userId, chatMode = 'no
       response: result.response,
       message_id: result.message_id,
       mode_used: result.mode_used,
-      tools_activated: result.tools_activated
+      tools_activated: result.tools_activated,
+      schema_version: result.schema_version,
+      answer: result.answer,
+      key_points: result.key_points,
+      sources: result.sources,
+      confidence: result.confidence,
+      answer_type: result.answer_type,
+      metadata: result.metadata,
+      blocks: result.blocks,
+      structured_response: result.structured_response
     };
   } catch (error) {
     console.error('sendChatMessage error:', error);
@@ -160,14 +182,15 @@ export async function sendChatMessage(message, sessionId, userId, chatMode = 'no
 /**
  * Streaming Chat API - For Server-Sent Events (SSE) streaming
  */
-export async function* streamChatMessage(message, sessionId, userId, chatMode = 'normal', personality = null, userSettings = null) {
+export async function* streamChatMessage(message, sessionId, userId, chatMode = "smart", personality = null, userSettings = null, fileIds = []) {
   try {
-    const body = { 
-      message, 
-      session_id: sessionId, 
-      user_id: userId, 
-      chat_mode: chatMode, 
-      user_settings: userSettings
+    const body = {
+      message,
+      session_id: sessionId,
+      user_id: userId,
+      chat_mode: chatMode,
+      user_settings: userSettings,
+      file_ids: Array.isArray(fileIds) ? fileIds : [],
     };
 
     const normalizedPersonality = normalizePersonalityForSend(personality);
@@ -177,84 +200,312 @@ export async function* streamChatMessage(message, sessionId, userId, chatMode = 
     }
 
     const authHeaders = await getAuthHeaders();
-    const response = await fetch(`${API_BASE_URL}/chat/stream`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', ...authHeaders },
-      credentials: 'include',
+
+    // Canonical flow for all modes: submit -> task stream
+    const submitResp = await fetchWithTimeout(`${API_BASE_URL}/chat/submit`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      credentials: "include",
       body: JSON.stringify(body),
-    });
-    
+    }, 30000);
+
+    if (!submitResp.ok) {
+      if ([429, 503, 402].includes(submitResp.status)) {
+        let type = "default";
+        if (submitResp.status === 429) type = "429";
+        if (submitResp.status === 503) type = "503";
+        if (submitResp.status === 402) type = "spend_guard";
+        window.dispatchEvent(new CustomEvent("governance_alert", { detail: { type } }));
+        throw new Error(`GOVERNANCE_BLOCK_${type}`);
+      }
+      throw new Error(`HTTP ${submitResp.status}`);
+    }
+
+    const submitData = await submitResp.json();
+    if (!submitData?.task_id) {
+      throw new Error("Queued task id missing");
+    }
+
+    yield {
+      type: "info",
+      payload: {
+        agent_state: "task_queued",
+        task_id: submitData.task_id,
+        lane: submitData.lane,
+        queue_depth: submitData.queue_depth ?? 0,
+        lane_queue_depth: submitData.lane_queue_depth ?? 0,
+        stream_schema_version: submitData.stream_schema_version ?? 2,
+      },
+    };
+
+    const streamUrl = `${API_BASE_URL}/chat/tasks/${submitData.task_id}/stream`;
+    const streamMethod = "GET";
+    const streamBody = undefined;
+
+    const response = await fetchWithTimeout(streamUrl, {
+      method: streamMethod,
+      headers: { "Content-Type": "application/json", ...authHeaders },
+      credentials: "include",
+      body: streamBody,
+    }, 30000);
+
     if (!response.ok) {
       if ([429, 503, 402].includes(response.status)) {
-        let type = 'default';
-        if (response.status === 429) type = '429';
-        if (response.status === 503) type = '503';
-        if (response.status === 402) type = 'spend_guard';
-        window.dispatchEvent(new CustomEvent('governance_alert', { detail: { type } }));
+        let type = "default";
+        if (response.status === 429) type = "429";
+        if (response.status === 503) type = "503";
+        if (response.status === 402) type = "spend_guard";
+        window.dispatchEvent(new CustomEvent("governance_alert", { detail: { type } }));
         throw new Error(`GOVERNANCE_BLOCK_${type}`);
       }
       throw new Error(`HTTP ${response.status}`);
     }
-    
+
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
-    let buffer = '';
-    
+    let buffer = "";
+
+    const handleSsePayload = async function* (payloadText) {
+      if (!payloadText) return;
+
+      let normalized = String(payloadText).trim();
+      if (!normalized) return;
+
+      // Strip escaped trailing newlines sometimes appended by proxies.
+      normalized = normalized.replace(/(?:\\r|\\n)+$/g, '').trim();
+
+      // Split bundled SSE payloads that still contain nested data: frames.
+      if (normalized.includes('data:')) {
+        const bundled = normalized
+          .split(/(?:\r?\n\r?\n|\n\n|\\n\\n)\s*(?=data:\s*|\{)/)
+          .map((part) => part.replace(/^\s*data:\s*/, '').trim())
+          .filter(Boolean);
+
+        for (const part of bundled) {
+          for await (const out of handleSsePayload(part)) {
+            yield out;
+          }
+        }
+        return;
+      }
+
+      let data;
+      try {
+        data = JSON.parse(normalized);
+      } catch (e) {
+        // Fallback: split concatenated JSON-like chunks and parse independently.
+        const parts = normalized
+          .split(/(?:\r?\n\r?\n|\n\n|\\n\\n)+/)
+          .map((part) => part.trim())
+          .filter(Boolean);
+
+        if (parts.length > 1) {
+          for (const part of parts) {
+            for await (const out of handleSsePayload(part)) {
+              yield out;
+            }
+          }
+          return;
+        }
+
+        console.warn('Failed to parse SSE payload:', normalized, e);
+        return;
+      }
+
+      if (data.type === 'token') {
+        yield { type: 'token', content: data.text ?? data.content ?? '' };
+      } else if (data.type === 'message_start') {
+        yield {
+          type: 'info',
+          payload: {
+            agent_state: 'message_start',
+            message_id: data.message_id,
+            mode: data.mode,
+            stream_schema_version: data.stream_schema_version,
+            timestamp: data.timestamp,
+          },
+        };
+      } else if (data.type === 'progress') {
+        yield {
+          type: 'info',
+          payload: {
+            ...data,
+            agent_state: data.state || 'progress',
+            topic: data.label || '',
+            percent: data.percent,
+            followups: data.followups,
+            action_chips: data.action_chips,
+            followup_mode: data.followup_mode,
+            lane: data.lane,
+            timestamp: data.timestamp,
+          },
+        };
+      } else if (data.type === 'tool_call' || data.type === 'tool_result') {
+        yield {
+          type: 'info',
+          payload: {
+            ...data,
+            agent_state: data.type,
+            tool: data.tool,
+            call_id: data.call_id,
+            status: data.status,
+            topic: data.args_preview || '',
+            error: data.error || '',
+            timestamp: data.timestamp,
+          },
+        };
+      } else if (data.type === 'source') {
+        yield {
+          type: 'info',
+          payload: {
+            agent_state: 'source',
+            source: {
+              id: data.id,
+              url: data.url,
+              title: data.title,
+              provider: data.provider,
+              confidence: data.confidence,
+              type: data.type,
+            },
+            timestamp: data.timestamp,
+          },
+        };
+      } else if (data.type === 'info') {
+        if (data.content && typeof data.content === 'object') {
+          yield { type: 'info', payload: data.content };
+        } else {
+          try {
+            yield { type: 'info', payload: JSON.parse(data.content) };
+          } catch {
+            yield { type: 'info', payload: data.content };
+          }
+        }
+      } else if (data.type === 'event') {
+        const payload = data.content || {};
+        yield { type: 'info', payload: { agent_state: payload.event || 'task_event', ...payload } };
+      } else if (data.type === 'final') {
+        yield { type: 'final_answer', payload: data };
+      } else if (data.type === 'final_answer') {
+        // Legacy fallback
+        yield { type: 'final_answer', payload: data.content };
+      } else if (data.type === 'done') {
+        yield { type: 'done' };
+      } else if (data.type === 'error') {
+        throw new Error(data.message || data.content || 'Internal server error');
+      }
+    };
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      
+
       buffer += decoder.decode(value, { stream: true });
-      
-      const lines = buffer.split('\n');
-      // Keep the last partial line in the buffer
-      buffer = lines.pop() || '';
-      
-      for (const line of lines) {
-        if (!line.trim() || !line.startsWith('data: ')) continue;
-        
-        try {
-          const data = JSON.parse(line.slice(6));
-          if (data.type === 'token') {
-            yield { type: 'token', content: data.content };
-          } else if (data.type === 'info') {
-            try {
-              yield { type: 'info', payload: JSON.parse(data.content) };
-            } catch (e) {
-              yield { type: 'info', payload: data.content };
-            }
-          } else if (data.type === 'done') {
-            return;
-          } else if (data.type === 'error') {
-            throw new Error(data.content);
-          }
-        } catch (e) {
-          console.warn('Failed to parse SSE line:', line);
+      const events = buffer.split(/(?:\r?\n\r?\n|\\n\\n)(?=data:\s*)/);
+      buffer = events.pop() || "";
+
+      for (const eventText of events) {
+        const payloadText = eventText
+          .split(/\r?\n/)
+          .filter((line) => line.startsWith("data:"))
+          .map((line) => line.slice(5).trimStart())
+          .join("\n")
+          .trim();
+
+        for await (const out of handleSsePayload(payloadText)) {
+          if (out.type === "done") return;
+          yield out;
         }
-      }
-    const tail = (buffer || "").trim();
-    if (tail && tail.startsWith("data: ")) {
-      try {
-        const data = JSON.parse(tail.slice(6));
-        if (data.type === "token") {
-          yield { type: "token", content: data.content };
-        } else if (data.type === "info") {
-          try {
-            yield { type: "info", payload: JSON.parse(data.content) };
-          } catch (e) {
-            yield { type: "info", payload: data.content };
-          }
-        } else if (data.type === "error") {
-          throw new Error(data.content);
-        }
-      } catch (e) {
-        console.warn("Failed to parse trailing SSE line:", tail);
       }
     }
+
+    const tail = (buffer || "").trim();
+    if (tail) {
+      const payloadText = tail
+        .split(/\r?\n/)
+        .filter((line) => line.startsWith("data:"))
+        .map((line) => line.slice(5).trimStart())
+        .join("\n")
+        .trim();
+
+      for await (const out of handleSsePayload(payloadText)) {
+        if (out.type === "done") return;
+        yield out;
+      }
     }
   } catch (error) {
-    console.error('streamChatMessage error:', error);
+    if (error?.name === "AbortError") {
+      const timeoutError = new Error("Request timed out while waiting for backend response.");
+      console.error("streamChatMessage timeout:", timeoutError);
+      throw timeoutError;
+    }
+    console.error("streamChatMessage error:", error);
     throw error;
+  }
+}
+
+
+export async function submitChatTask(message, sessionId, userId, chatMode = "agent", personality = null, userSettings = null) {
+  const body = {
+    message,
+    session_id: sessionId,
+    user_id: userId,
+    chat_mode: chatMode,
+    user_settings: userSettings,
+    file_ids: [],
+  };
+
+  const normalizedPersonality = normalizePersonalityForSend(personality);
+  if (normalizedPersonality) {
+    body.personality = normalizedPersonality;
+    if (normalizedPersonality.id) body.personality_id = normalizedPersonality.id;
+  }
+
+  const authHeaders = await getAuthHeaders();
+  return apiFetch("/chat/submit", {
+    method: "POST",
+    headers: authHeaders,
+    body: JSON.stringify(body),
+  });
+}
+
+export async function getChatTaskStatus(taskId) {
+  const authHeaders = await getAuthHeaders();
+  return apiFetch(`/chat/tasks/${taskId}`, { method: "GET", headers: authHeaders });
+}
+
+export async function getChatTaskEvents(taskId, afterSeq = 0) {
+  const authHeaders = await getAuthHeaders();
+  return apiFetch(`/chat/tasks/${taskId}/events?after_seq=${afterSeq}`, { method: "GET", headers: authHeaders });
+}
+
+export async function cancelChatTask(taskId) {
+  const authHeaders = await getAuthHeaders();
+  try {
+    return await apiFetch(`/chat/tasks/${taskId}/cancel`, {
+      method: 'POST',
+      headers: authHeaders,
+    });
+  } catch (error) {
+    return apiFetch(`/agent/cancel/${taskId}`, {
+      method: 'POST',
+      headers: authHeaders,
+    });
+  }
+}
+
+export async function confirmChatTask(taskId, confirm = true) {
+  const authHeaders = await getAuthHeaders();
+  try {
+    return await apiFetch(`/chat/tasks/${taskId}/confirm`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ confirm: !!confirm }),
+    });
+  } catch (error) {
+    return apiFetch(`/agent/confirm/${taskId}`, {
+      method: 'POST',
+      headers: authHeaders,
+      body: JSON.stringify({ confirm: !!confirm }),
+    });
   }
 }
 
@@ -270,6 +521,7 @@ export class WebSocketChatManager {
     this.onDone = null;
     this.onError = null;
     this.onInfo = null;
+    this.onFinalAnswer = null;
     this.reconnectAttempts = 0;
     this.maxReconnectAttempts = 5;
     this.reconnectTimeout = null;
@@ -304,6 +556,7 @@ export class WebSocketChatManager {
     this.onDone = callbacks.onDone || (() => {});
     this.onError = callbacks.onError || (() => {});
     this.onInfo = callbacks.onInfo || (() => {});
+    this.onFinalAnswer = callbacks.onFinalAnswer || (() => {});
     this.onConnect = callbacks.onConnect || (() => {});
     this.onReconnect = callbacks.onReconnect || (() => {});
     this.tokenProvider = tokenProvider;
@@ -372,6 +625,9 @@ export class WebSocketChatManager {
               break;
             case 'info':
               this.onInfo(data.content);
+              break;
+            case 'final_answer':
+              this.onFinalAnswer(data.content);
               break;
             case 'pong':
               // Heartbeat response
@@ -442,14 +698,14 @@ export class WebSocketChatManager {
     }
   }
   
-   /**
+  /**
    * Send a chat message
    * @param {string} content - Message content
-   * @param {string} chatMode - 'normal' | 'business' | 'deepsearch'
+   * @param {string} chatMode - 'smart' | 'agent' | 'research_pro'
    * @param {object|null} personality - Active personality object
    * @param {object|null} userSettings - User preference settings
    */
-  sendMessage(content, chatMode = 'normal', personality = null, userSettings = null) {
+  sendMessage(content, chatMode = 'smart', personality = null, userSettings = null) {
     const payload = {
       type: 'message',
       content,
@@ -566,7 +822,7 @@ export async function webSearch(query, tools = ['Search']) {
 }
 
 /**
- * File Upload API â€” routes to RAG server for document indexing
+ * File Upload API - routes to RAG server for document indexing
  */
 export async function uploadFile(file, sessionId = 'general') {
   try {
@@ -609,9 +865,14 @@ export async function getChatHistory(userId, sessionId, limit = 50) {
  */
 export async function fetchUserProfile() {
   const authHeaders = await getAuthHeaders();
-  return await apiFetch('/users/me', {
+  const payload = await apiFetch('/users/me', {
     headers: authHeaders,
   });
+  if (payload?.user) return payload;
+  if (payload && typeof payload === 'object') {
+    return { success: true, user: payload };
+  }
+  return { success: false, user: null };
 }
 
 /**
@@ -724,3 +985,80 @@ export async function checkBackendHealth() {
 
 // Export API base URLs for other modules
 export { RAG_BASE_URL, WS_BASE_URL };
+
+
+
+/**
+ * Admin Ops: run inspector
+ */
+export async function getAdminRun(runId) {
+  const authHeaders = await getAuthHeaders();
+  return apiFetch(`/admin/ops/run/${encodeURIComponent(runId)}`, {
+    method: 'GET',
+    headers: authHeaders,
+  });
+}
+
+/**
+ * Admin Ops: replay run (trace_only|simulated|full_execution)
+ */
+export async function replayAdminRun(runId, mode = 'trace_only', allowFullExecution = false) {
+  const authHeaders = await getAuthHeaders();
+  return apiFetch(`/admin/ops/replay/${encodeURIComponent(runId)}`, {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({
+      mode,
+      allow_full_execution: !!allowFullExecution,
+    }),
+  });
+}
+
+/**
+ * Admin Ops: dry-run planner/tooling preview
+ */
+export async function dryRunAdminAgent(query, mode = 'agent', topK = 5) {
+  const authHeaders = await getAuthHeaders();
+  return apiFetch('/admin/ops/dry-run', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({
+      query,
+      mode,
+      top_k: topK,
+    }),
+  });
+}
+
+/**
+ * Memory governance: delete memory item(s)
+ */
+export async function deleteMemory({ userId = null, factId = null, type = null, mode = 'soft', reason = 'user_request' } = {}) {
+  const authHeaders = await getAuthHeaders();
+  return apiFetch('/memory/delete', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({
+      user_id: userId,
+      fact_id: factId,
+      type,
+      mode,
+      reason,
+    }),
+  });
+}
+
+/**
+ * Memory governance: run decay/expiry pass (admin)
+ */
+export async function runMemoryDecay({ limit = 500, minEffectiveConfidence = 0.2 } = {}) {
+  const authHeaders = await getAuthHeaders();
+  return apiFetch('/memory/decay/run', {
+    method: 'POST',
+    headers: authHeaders,
+    body: JSON.stringify({
+      limit,
+      min_effective_confidence: minEffectiveConfidence,
+    }),
+  });
+}

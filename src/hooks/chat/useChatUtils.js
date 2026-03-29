@@ -21,3 +21,11 @@ export const copyMessageToClipboard = async (content) => {
         }
     }
 };
+
+export const normalizeAssistantRole = (role) => {
+    const value = String(role || '').toLowerCase().trim();
+    if (value === 'assistant') return 'bot';
+    return value || 'user';
+};
+
+export const isAssistantLikeRole = (role) => normalizeAssistantRole(role) === 'bot';

@@ -1,4 +1,4 @@
-﻿import React, { memo, useCallback, useEffect, useRef } from 'react';
+import React, { memo, useCallback, useEffect, useRef } from 'react';
 import { useAuth } from '../../../context/AuthContext';
 import { LogIn } from 'lucide-react';
 import ChatInput from './ChatInput';
@@ -8,7 +8,7 @@ import MessageComponent from './MessageComponent';
 import TypingIndicator from './TypingIndicator';
 import { LoadingSpinner } from '../../../components/loading';
 import BotSkeletonLoader from './BotSkeletonLoader';
-import { FloatingAgentStatus } from './FloatingAgentStatus';
+import { normalizeChatMode, isAgentPremiumMode } from '../utils/chatMode.js';
 // removed logo import
 
 const AnimatedGradientText = ({ children, className }) => (
@@ -114,15 +114,6 @@ const buildContinuePrompt = (meta, content) => {
     "</PREVIOUS_OUTPUT>",
   ].join("\n");
 };
-const AGENT_TOOL_BADGES = [
-  "search_web", "search_news", "search_scholar", "search_weather", "search_finance",
-  "search_currency", "search_company", "search_legal", "search_jobs", "search_academic",
-  "search_tech_docs", "search_products", "search_competitors", "search_trends", "compare_products",
-  "summarize_url", "extract_tables", "faq_builder", "document_compare",
-  "extract_entities", "validate_code", "generate_tests", "execute_code",
-  "sentiment_scan", "data_cleaner", "unit_cost_calc",
-];
-
 const ChatWindow = memo(function ChatWindow({
   currentSessionId,
   userId,
@@ -167,10 +158,14 @@ const ChatWindow = memo(function ChatWindow({
   const membershipPlan = String(rawMembershipPlan).trim().toLowerCase();
   const normalizedPlan = membershipPlan
     .replace(/\s+/g, '')
+    .replace(/plan$/g, '')
     .replace('professional', 'pro')
-    .replace('businessplan', 'business');
+    .replace('businessplan', 'business')
+    .replace('proplan', 'pro')
+    .replace('plusplan', 'plus');
   const canUseFullAgent = ['plus', 'pro', 'business'].includes(normalizedPlan);
-  const isAgentTrial = chatMode === 'agent' && !canUseFullAgent;
+  const effectiveMode = normalizeChatMode(chatMode);
+  const isAgentTrial = isAgentPremiumMode(effectiveMode) && !canUseFullAgent;
 
   const handleContinue = useCallback((msg, meta) => {
     if (!msg || !meta) return;
@@ -187,6 +182,7 @@ const ChatWindow = memo(function ChatWindow({
 
   const prevMessagesLengthRef = useRef(messages.length);
   const isAutoScrollingRef = useRef(false);
+  const prevBotTypingRef = useRef(false);
   const lastUserMessageRef = useRef(null);
   const lastBotMessageRef = useRef(null);
   const prevSessionIdRef = useRef(currentSessionId);
@@ -283,17 +279,22 @@ const ChatWindow = memo(function ChatWindow({
     };
   }, [botTyping]);
 
-  // Keep viewport pinned after streaming stops to avoid jump when markdown finalizes.
+  // Keep viewport pinned once when streaming stops to avoid post-stream bounce.
   useEffect(() => {
-    if (botTyping) return;
+    const wasTyping = prevBotTypingRef.current;
+    prevBotTypingRef.current = botTyping;
+    if (botTyping || !wasTyping) return;
+
     const container = messagesContainerRef.current;
     if (!container) return;
 
-    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 220;
+    const isNearBottom = container.scrollHeight - container.scrollTop - container.clientHeight < 260;
     if (!isNearBottom) return;
 
     let raf1 = null;
     let raf2 = null;
+    let settleTimer = null;
+
     raf1 = requestAnimationFrame(() => {
       container.scrollTop = container.scrollHeight;
       raf2 = requestAnimationFrame(() => {
@@ -301,11 +302,18 @@ const ChatWindow = memo(function ChatWindow({
       });
     });
 
+    // One delayed settle pass for markdown finalization/layout changes.
+    settleTimer = setTimeout(() => {
+      if (!messagesContainerRef.current) return;
+      messagesContainerRef.current.scrollTop = messagesContainerRef.current.scrollHeight;
+    }, 180);
+
     return () => {
       if (raf1) cancelAnimationFrame(raf1);
       if (raf2) cancelAnimationFrame(raf2);
+      if (settleTimer) clearTimeout(settleTimer);
     };
-  }, [messages, botTyping]);
+  }, [botTyping]);
   // Track user scroll - user can always opt out during streaming by scrolling up
   useEffect(() => {
     const container = messagesContainerRef.current;
@@ -368,29 +376,12 @@ const ChatWindow = memo(function ChatWindow({
         />
       )}
 
-      <div ref={messagesContainerRef} className={`flex-1 overflow-y-auto overflow-x-hidden relative mobile-messages-container pt-[60px] md:pt-0 custom-chat-scrollbar chat-messages-container ${isTransitioning ? 'transitioning' : ''}`}>
+      <div ref={messagesContainerRef} className={`flex-1 overflow-y-auto overflow-x-hidden relative mobile-messages-container ${showHeader ? 'pt-[60px] md:pt-0' : 'pt-0'} custom-chat-scrollbar chat-messages-container ${isTransitioning ? 'transitioning' : ''}`}>
         {!loading && !isTransitioning && !isSessionSwitchingRef.current && messages.length === 0 && (
           <div className="min-h-[calc(100vh-200px)] w-full"></div>
         )}
-        {chatMode === "agent" && (
-          <div className="max-w-4xl mx-auto w-full px-4 pt-4">
-            <div className="border border-white/10 bg-white/[0.02] rounded-2xl p-4">
-              <div className="flex items-center gap-2 text-xs uppercase tracking-widest text-zinc-500 mb-2">
-                <span className={canUseFullAgent ? "text-cyan-300" : "text-amber-300"}>{canUseFullAgent ? "Agent Tools Available" : "Agent Trial"}</span>
-                <span className="text-zinc-600">{canUseFullAgent ? '- Web access required for some tools' : '- Free plan: 2 agent messages per chat, no continuation'}</span>
-              </div>
-              <div className="flex flex-wrap gap-2">
-                {AGENT_TOOL_BADGES.map((tool) => (
-                  <span key={tool} className="text-[10px] uppercase tracking-widest px-2 py-1 rounded-full border border-white/10 bg-white/[0.02] text-zinc-300">
-                    {tool}
-                  </span>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
         {messages.length > 0 && (
-          <div className="max-w-4xl mx-auto w-full px-4 pt-8 pb-40 md:pt-12 md:pb-48 overflow-x-hidden">
+          <div className="max-w-5xl mx-auto w-full px-4 md:px-6 pt-8 pb-32 md:pt-10 md:pb-40 overflow-x-hidden">
             {messages.map((msg, index) => {
               const continueMetaRaw = extractContinueMeta(msg.content);
               const continueMeta = isAgentTrial ? null : continueMetaRaw;
@@ -417,12 +408,10 @@ const ChatWindow = memo(function ChatWindow({
         )}
       </div>
 
-      <FloatingAgentStatus messages={messages} isTyping={botTyping} />
-
       <div className={`absolute left-0 right-0 z-20 pointer-events-none transition-all duration-300 ease-in-out ${
          (!loading && !isTransitioning && !isSessionSwitchingRef.current && messages.length === 0)
            ? 'top-[45%] -translate-y-1/2 flex flex-col items-center justify-center p-4' 
-           : 'bottom-0 p-3 md:pb-8 md:px-6 mobile-input-container mobile-input-fixed bg-gradient-to-t from-[#0a0d14] via-[#0a0d14]/95 to-transparent pt-20'
+           : 'bottom-0 px-4 pb-4 md:px-6 md:pb-7 mobile-input-container mobile-input-fixed'
       }`}>
         {(!loading && !isTransitioning && !isSessionSwitchingRef.current && messages.length === 0) && (
           <div className="text-center animate-fade-in pointer-events-auto mb-8 flex flex-col items-center gap-3">
@@ -437,14 +426,6 @@ const ChatWindow = memo(function ChatWindow({
             canUseFullAgent={canUseFullAgent} membershipPlan={membershipPlan}
           />
         </div>
-        {(!loading && !isTransitioning && !isSessionSwitchingRef.current && messages.length === 0) && (
-          <div className="mt-8 flex flex-wrap justify-center gap-2 max-w-2xl mx-auto pointer-events-auto opacity-80">
-             <button onClick={() => handleSend({ text: "Draft an architecture doc" })} className="px-4 py-2 rounded-full border border-white/5 text-[11px] font-medium tracking-wide text-zinc-400 hover:bg-white/5 hover:text-white transition-colors bg-white/[0.02]">Draft an architecture doc</button>
-             <button onClick={() => handleSend({ text: "Analyze market trends" })} className="px-4 py-2 rounded-full border border-white/5 text-[11px] font-medium tracking-wide text-zinc-400 hover:bg-white/5 hover:text-white transition-colors bg-white/[0.02]">Analyze market trends</button>
-             <button onClick={() => handleSend({ text: "Optimize pipeline" })} className="px-4 py-2 rounded-full border border-white/5 text-[11px] font-medium tracking-wide text-zinc-400 hover:bg-white/5 hover:text-white transition-colors bg-white/[0.02]">Optimize pipeline</button>
-             <button onClick={() => handleSend({ text: "Refactor algorithm" })} className="px-4 py-2 rounded-full border border-white/5 text-[11px] font-medium tracking-wide text-zinc-400 hover:bg-white/5 hover:text-white transition-colors bg-white/[0.02]">Refactor algorithm</button>
-          </div>
-        )}
       </div>
       
       <style>{`
@@ -458,5 +439,3 @@ const ChatWindow = memo(function ChatWindow({
 });
 
 export default ChatWindow;
-
-

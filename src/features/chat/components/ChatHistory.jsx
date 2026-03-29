@@ -212,30 +212,6 @@ const ZetoChatHistory = memo(function ZetoChatHistory({
   const [draggedSessionId, setDraggedSessionId] = useState(null);
   const [dragOverSessionId, setDragOverSessionId] = useState(null);
 
-  if (loading) {
-    return (
-      <div className={`hidden md:flex flex-col h-full border-r transition-colors bg-[#0a0d14] border-white/5 ${className}`}>
-        <div className="flex-1 flex items-center justify-center">
-          <div className="text-[10px] uppercase font-mono tracking-widest text-zinc-600 animate-pulse">Scanning...</div>
-        </div>
-      </div>
-    );
-  }
-
-  if (!user) {
-    return (
-      <div className={`hidden md:flex flex-col h-full border-r transition-colors bg-[#0a0d14] border-white/5 ${className}`}>
-        <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
-          <div className="mb-6 opacity-50"><LogIn size={32} className="text-white" /></div>
-          <h2 className="text-sm tracking-widest uppercase mb-4 text-white">Auth Required</h2>
-          <button onClick={() => navigate('/login')} className="px-6 py-3 text-xs tracking-widest uppercase transition bg-white text-black hover:bg-white/90">
-            Sign In
-          </button>
-        </div>
-      </div>
-    );
-  }
-
   const handleToggleSidebar = useCallback(() => {
     setIsExpanded(!isExpanded);
     if (onToggleSidebar) onToggleSidebar(!isExpanded);
@@ -314,10 +290,33 @@ const ZetoChatHistory = memo(function ZetoChatHistory({
   };
   
   const handleDragEnd = () => { setDraggedSessionId(null); setDragOverSessionId(null); };
+  if (loading) {
+    return (
+      <div className={`hidden md:flex flex-col h-full border-r transition-colors bg-[#0a0d14] border-white/5 ${className}`}>
+        <div className="flex-1 flex items-center justify-center">
+          <div className="text-[10px] uppercase font-mono tracking-widest text-zinc-600 animate-pulse">Scanning...</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (!user) {
+    return (
+      <div className={`hidden md:flex flex-col h-full border-r transition-colors bg-[#0a0d14] border-white/5 ${className}`}>
+        <div className="flex-1 flex flex-col items-center justify-center p-6 text-center">
+          <div className="mb-6 opacity-50"><LogIn size={32} className="text-white" /></div>
+          <h2 className="text-sm tracking-widest uppercase mb-4 text-white">Auth Required</h2>
+          <button onClick={() => navigate('/login')} className="px-6 py-3 text-xs tracking-widest uppercase transition bg-white text-black hover:bg-white/90">
+            Sign In
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <>
-      <div className={`flex flex-col h-full flex-shrink-0 transition-all duration-300 ${isExpanded ? "w-80" : "w-16"} ${className} relative overflow-hidden bg-[#0a0d14] text-white border-r border-white/5`}>
+      <div className={`flex flex-col h-full flex-shrink-0 transition-all duration-300 ${isExpanded ? "w-80" : "w-16"} ${className} relative overflow-hidden bg-[#111318] text-white border-r border-white/10`}>
         <div className="flex flex-col gap-0 flex-shrink-0 pt-6">
           <div className="md:hidden flex justify-end px-4 mb-4">
             <button onClick={() => window.dispatchEvent(new CustomEvent('closeSidebar'))} className="p-2 text-white/50 hover:text-white hover:bg-white/5 transition" title="Close Sidebar"><X size={20} /></button>
@@ -326,8 +325,8 @@ const ZetoChatHistory = memo(function ZetoChatHistory({
           <div className={`flex items-center ${isExpanded ? 'justify-between px-6' : 'justify-center'} mb-8`}>
             {isExpanded && (
               <div className="flex items-center gap-3">
-                <img src="/logo.svg" alt="Relyce AI" className="w-6 h-6 opacity-80 grayscale" />
-                <span className="text-sm font-semibold tracking-[0.2em] uppercase text-white">RELYCE</span>
+                <img src="/logo.svg" alt="Relyce AI" className="w-6 h-6 opacity-90" />
+                <span className="text-2xl font-semibold tracking-wide text-white">Relyce</span>
               </div>
             )}
             <button onClick={handleToggleSidebar} className="p-2 text-white/50 hover:text-white hover:bg-white/5 transition" title={isExpanded ? "Pin sidebar open" : "Expand sidebar"}>
@@ -336,9 +335,12 @@ const ZetoChatHistory = memo(function ZetoChatHistory({
           </div>
 
           <div className="px-4 mb-8">
-             <button onClick={createNewSession} className={`group relative w-full flex items-center justify-center gap-2 py-3.5 bg-transparent text-white border border-white/10 hover:border-white/20 transition-all duration-500 ${isExpanded ? '' : 'px-0'}`}>
+             <button onClick={createNewSession} className={`group relative w-full flex items-center justify-center gap-2 py-3.5 bg-white/[0.04] text-white border border-white/10 hover:border-white/20 hover:bg-white/[0.07] transition-all duration-300 rounded-2xl ${isExpanded ? '' : 'px-0'}`}>
                 {isExpanded ? (
-                   <span className="text-[11px] font-mono uppercase tracking-[0.2em] group-hover:tracking-[0.25em] transition-all text-white/70 group-hover:text-white duration-500">INIT SEQUENCE</span>
+                   <>
+                     <Plus size={16} className="text-zinc-200" />
+                     <span className="text-lg font-medium tracking-wide text-zinc-100">New Chat</span>
+                   </>
                 ) : (
                     <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
                 )}
@@ -347,10 +349,10 @@ const ZetoChatHistory = memo(function ZetoChatHistory({
 
           {isExpanded ? (
             <div className="relative mb-6 px-4">
-              <input type="text" placeholder="QUERY LOGS..." value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
-                className="w-full bg-transparent border-b border-white/10 py-2 pl-2 pr-8 text-[11px] uppercase tracking-wider text-white placeholder-white/30 focus:outline-none focus:border-white/40 transition-colors"
+              <input type="text" placeholder="Search Chats" value={searchQuery} onChange={(e) => setSearchQuery(e.target.value)}
+                className="w-full bg-white/[0.03] rounded-xl border border-white/10 py-2.5 pl-3 pr-8 text-sm tracking-wide text-white placeholder-white/35 focus:outline-none focus:border-white/30 transition-colors"
                />
-               <Search size={12} className="absolute right-6 top-3 text-white/30" />
+               <Search size={14} className="absolute right-6 top-3 text-white/30" />
             </div>
           ) : (
             <SidebarItem icon={<Search size={16} />} text="Search" onClick={() => {}} isExpanded={isExpanded} />
@@ -370,7 +372,7 @@ const ZetoChatHistory = memo(function ZetoChatHistory({
         <div className={`chat-history-scroll overflow-y-auto overflow-x-hidden ${isExpanded ? "opacity-100 px-0" : "opacity-0 pointer-events-none"}`} style={{ height: 'calc(100vh - 280px)', maxHeight: 'calc(100vh - 280px)' }}>
           {pinnedSessions.length > 0 && (
             <div className="mb-6">
-              <h3 className="px-6 text-[10px] uppercase font-mono tracking-widest text-white/30 mb-2 flex items-center gap-2">
+              <h3 className="px-6 text-[11px] font-medium tracking-wide text-white/40 mb-2 flex items-center gap-2">
                 <Pin size={10} /> PINNED
               </h3>
               <ul className="chat-list">
@@ -399,7 +401,7 @@ const ZetoChatHistory = memo(function ZetoChatHistory({
           )}
 
           <div>
-             <h3 className="px-6 text-[10px] uppercase font-mono tracking-widest text-white/30 mb-2">RECENT LOGS</h3>
+             <h3 className="px-6 text-[11px] font-medium tracking-wide text-white/40 mb-2">Chats</h3>
              <ul className="chat-list">
                {unpinnedSessions.map((session) => (
                  <li key={session.id} className={`relative group ${dragOverSessionId === session.id ? 'border-t border-white/20' : ''}`}

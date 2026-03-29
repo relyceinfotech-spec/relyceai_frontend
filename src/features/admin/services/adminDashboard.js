@@ -1,16 +1,12 @@
 import { collection, getDocs, doc, query, where, orderBy, getDoc, Timestamp, setDoc } from 'firebase/firestore';
 import { db, auth } from '../../../utils/firebaseConfig';
 import { API_BASE_URL } from '../../../utils/api';
+import { parseHighStakesMetricsPayload, DEFAULT_HS_THRESHOLDS } from './highStakesMetricsAdapter';
 import { verifyAdminAccess, validateRoleChange } from './adminSecurity';
 import { generateUserId } from '../../users/services/userService';
+import { getDefaultPricing, mergePricingWithCatalog } from '../../membership/planCatalog';
 
-export const MEMBERSHIP_PLANS = {
-  free: { name: 'Free', monthly: 0, yearly: 0, yearlyDiscountPercentage: 0, features: ['Generic AI chatbot', 'Limited business chatbot', 'Basic data visualization', '15 chats/month', '30-day history'] },
-  starter: { name: 'Starter', monthly: 199, yearly: 1999, yearlyDiscountPercentage: 16.7, features: ['Generic + Business chatbot', 'Interactive visualization', '150 chats/month', '60-day history', 'Export chat', 'Priority support'] },
-  plus: { name: 'Plus', monthly: 999, yearly: 9999, yearlyDiscountPercentage: 16.7, features: ['Advanced business workflows', 'Enhanced visualization', '600 chats/month', 'File upload (50 files, 100MB)', 'Premium support', 'Export reports'] },
-  pro: { name: 'Pro', monthly: 1999, yearly: 19999, yearlyDiscountPercentage: 16.7, features: ['Team collaboration (5 users)', 'Advanced analytics', 'Custom branding', 'API access', '1,500 chats/month', 'Priority tech support'] },
-  business: { name: 'Business', monthly: 2499, yearly: 24999, yearlyDiscountPercentage: 16.7, features: ['Unlimited chats', 'Unlimited file uploads', 'Dedicated support manager', 'Team management', 'Advanced security', 'SLA guarantee'] }
-};
+export const MEMBERSHIP_PLANS = getDefaultPricing();
 
 export const getAllUsers = async (requesterId) => {
   const { isAdmin, isSuperAdmin, error } = await verifyAdminAccess(requesterId);
@@ -36,8 +32,8 @@ export const getAllUsers = async (requesterId) => {
   });
 
   return users.sort((a, b) => {
-    const idA = a.uniqueUserId ? parseInt(a.uniqueUserId.replace('RA', '')) : 0;
-    const idB = b.uniqueUserId ? parseInt(b.uniqueUserId.replace('RA', '')) : 0;
+    const idA = a.uniqueUserId ? parseInt(String(a.uniqueUserId).replace(/\D/g, ''), 10) || 0 : 0;
+    const idB = b.uniqueUserId ? parseInt(String(b.uniqueUserId).replace(/\D/g, ''), 10) || 0 : 0;
     return idA - idB;
   });
 };
@@ -166,8 +162,14 @@ export const getRevenueAnalytics = async (requesterId) => {
     const { isAdmin, isSuperAdmin, error } = await verifyAdminAccess(requesterId);
     if (error || (!isAdmin && !isSuperAdmin)) throw new Error('Unauthorized access to revenue analytics');
 
-    const planPricing = { starter: { monthly: 199, yearly: 1999 }, plus: { monthly: 999, yearly: 9999 }, business: { monthly: 2499, yearly: 24999 } };
-    const analytics = { daily: {}, monthly: {}, planBreakdown: { starter: { count: 0, revenue: 0 }, plus: { count: 0, revenue: 0 }, business: { count: 0, revenue: 0 } }, totalRevenue: 0 };
+    const pricing = await getCurrentPricing();
+    const planPricing = {
+      starter: { monthly: pricing.starter?.monthly || 199, yearly: pricing.starter?.yearly || 1999 },
+      plus: { monthly: pricing.plus?.monthly || 999, yearly: pricing.plus?.yearly || 9999 },
+      pro: { monthly: pricing.pro?.monthly || 1999, yearly: pricing.pro?.yearly || 19999 },
+      business: { monthly: pricing.business?.monthly || 2499, yearly: pricing.business?.yearly || 24999 }
+    };
+    const analytics = { daily: {}, monthly: {}, planBreakdown: { starter: { count: 0, revenue: 0 }, plus: { count: 0, revenue: 0 }, pro: { count: 0, revenue: 0 }, business: { count: 0, revenue: 0 } }, totalRevenue: 0 };
 
     (await getDocs(collection(db, 'users'))).docs.forEach(d => {
       const data = d.data();
@@ -185,7 +187,7 @@ export const getRevenueAnalytics = async (requesterId) => {
       }
     });
     return analytics;
-  } catch { return { daily: {}, monthly: {}, planBreakdown: { starter: { count: 0, revenue: 0 }, plus: { count: 0, revenue: 0 }, business: { count: 0, revenue: 0 } }, totalRevenue: 0 }; }
+  } catch { return { daily: {}, monthly: {}, planBreakdown: { starter: { count: 0, revenue: 0 }, plus: { count: 0, revenue: 0 }, pro: { count: 0, revenue: 0 }, business: { count: 0, revenue: 0 } }, totalRevenue: 0 }; }
 };
 
 export const testPaymentsCollection = async () => {
@@ -270,8 +272,11 @@ export const savePricingChanges = async (updatedPrices, requesterId) => {
 export const getCurrentPricing = async () => {
   try {
     const pricingDoc = await getDoc(doc(db, 'config', 'pricing'));
-    return pricingDoc.exists() ? pricingDoc.data().plans || MEMBERSHIP_PLANS : MEMBERSHIP_PLANS;
-  } catch { return MEMBERSHIP_PLANS; }
+    const rawPricing = pricingDoc.exists() ? (pricingDoc.data().plans || {}) : {};
+    return mergePricingWithCatalog(rawPricing);
+  } catch {
+    return mergePricingWithCatalog();
+  }
 };
 
 export const validateCoupon = async (couponCode) => {
@@ -396,3 +401,203 @@ export const syncPaymentManual = async (paymentId, userId, planId) => {
      throw error;
   }
 };
+
+export const getHighStakesMetrics = async (range = "24h") => {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) throw new Error('Not authenticated');
+
+  const response = await fetch(`${API_BASE_URL}/admin/high-stakes-metrics?range=${encodeURIComponent(range)}`, {
+    method: 'GET',
+    headers: {
+      'Authorization': `Bearer ${token}`
+    }
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || 'Failed to load high-stakes metrics');
+  }
+
+  const data = await response.json();
+  return parseHighStakesMetricsPayload(data);
+};
+
+export const getHighStakesThresholds = async () => {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) throw new Error('Not authenticated');
+
+  const response = await fetch(`${API_BASE_URL}/admin/high-stakes-thresholds`, {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${token}` }
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || 'Failed to load high-stakes thresholds');
+  }
+
+  const data = await response.json();
+  const t = data?.thresholds || {};
+  return {
+    source_fail_spike: Number(t.source_fail_spike ?? DEFAULT_HS_THRESHOLDS.source_fail_spike),
+    low_confidence_spike: Number(t.low_confidence_spike ?? DEFAULT_HS_THRESHOLDS.low_confidence_spike),
+    recency_fail_spike: Number(t.recency_fail_spike ?? DEFAULT_HS_THRESHOLDS.recency_fail_spike),
+  };
+};
+
+export const updateHighStakesThresholds = async (thresholds) => {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) throw new Error('Not authenticated');
+
+  const response = await fetch(`${API_BASE_URL}/admin/high-stakes-thresholds`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify({ thresholds })
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || 'Failed to update high-stakes thresholds');
+  }
+
+  const data = await response.json();
+  return data?.thresholds || thresholds;
+};
+
+export const getAgentDebugInsights = async (range = '24h', limit = 25) => {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) throw new Error('Not authenticated');
+
+  const response = await fetch(
+    `${API_BASE_URL}/admin/agent-debug?range=${encodeURIComponent(range)}&limit=${encodeURIComponent(limit)}`,
+    {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || 'Failed to load agent debug insights');
+  }
+
+  const data = await response.json();
+  return data?.data || {};
+};
+
+export const getAdminOpsInsights = async (range = '24h', limit = 25) => {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) throw new Error('Not authenticated');
+
+  const response = await fetch(
+    `${API_BASE_URL}/admin/ops-insights?range=${encodeURIComponent(range)}&limit=${encodeURIComponent(limit)}`,
+    {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || 'Failed to load operational insights');
+  }
+
+  const data = await response.json();
+  return data?.data || {};
+};
+
+export const getAgentModeCheck = async (input, requestedMode = 'smart') => {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) throw new Error('Not authenticated');
+
+  const response = await fetch(`${API_BASE_URL}/admin/agent-debug/mode-check`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify({
+      input: String(input || ''),
+      requested_mode: String(requestedMode || 'smart')
+    })
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || 'Failed to run agent mode check');
+  }
+
+  const data = await response.json();
+  return data?.data || {};
+};
+
+export const updateAgentDebugConfig = async (configPatch) => {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) throw new Error('Not authenticated');
+
+  const response = await fetch(`${API_BASE_URL}/admin/agent-debug-config`, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify(configPatch || {})
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || 'Failed to update agent debug config');
+  }
+
+  const data = await response.json();
+  return data?.config || {};
+};
+
+export const createAdaptiveSnapshot = async (label = 'manual') => {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) throw new Error('Not authenticated');
+
+  const response = await fetch(`${API_BASE_URL}/admin/agent-debug/adaptive/snapshot`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify({ label: String(label || 'manual') })
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || 'Failed to create adaptive snapshot');
+  }
+
+  const data = await response.json();
+  return data?.data || {};
+};
+
+export const rollbackAdaptiveSnapshot = async () => {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) throw new Error('Not authenticated');
+
+  const response = await fetch(`${API_BASE_URL}/admin/agent-debug/adaptive/rollback`, {
+    method: 'POST',
+    headers: {
+      'Authorization': `Bearer ${token}`
+    },
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || 'Failed to rollback adaptive snapshot');
+  }
+
+  const data = await response.json();
+  return data?.data || {};
+};
+
+
+
+

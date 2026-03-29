@@ -118,12 +118,12 @@ const HeroSection = () => {
 
         {/* The Core Headline */}
         <h1 className="text-5xl sm:text-6xl md:text-7xl lg:text-[90px] font-medium tracking-tight leading-[1.05] mb-8">
-            <span className="text-white drop-shadow-sm">Experience the Future</span><br className="hidden sm:block" />
-            <AnimatedGradientText>of AI Conversation.</AnimatedGradientText>
+            <span className="text-white drop-shadow-sm">Intelligent AI</span><br className="hidden sm:block" />
+            <AnimatedGradientText>Agents That Deliver.</AnimatedGradientText>
         </h1>
 
         <p className="text-lg md:text-xl text-zinc-400/90 font-light leading-relaxed max-w-2xl mx-auto mb-12 drop-shadow">
-          Instant, intelligent, and perfectly seamless. Your personal assistant, evolved. Engage in fluid dialogue with an entity that finally understands context.
+          Deploy AI agents that analyze documents, generate content, write code, and solve complex problems — all from a single, powerful interface.
         </p>
 
         {/* Ultra-Premium Glassmorphic CTA */}

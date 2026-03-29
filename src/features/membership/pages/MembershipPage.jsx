@@ -5,6 +5,7 @@ import { updateUserMembership } from '../services/membershipService';
 import { handleRazorpayPayment, prefetchRazorpay } from '../services/paymentService';
 import { getCurrentPricing } from '../../admin/services/adminDashboard';
 import { validateCoupon, getAllCoupons } from '../../../utils/couponManagement';
+import { BUSINESS_PLAN_IDS, PERSONAL_PLAN_IDS, mergePricingWithCatalog } from '../planCatalog';
 import toast, { Toaster } from 'react-hot-toast';
 
 const AnimatedGradientText = ({ children, className }) => (
@@ -41,16 +42,9 @@ export default function Membership() {
     const fetchPricing = async () => {
       try {
         setLoading(true);
-        const pricing = await getCurrentPricing();
-        const personalPlans = [
-          { id: 'free', title: 'Free', subtitle: 'Perfect to get started', monthlyPrice: pricing.free?.monthly || 0, yearlyPrice: pricing.free?.yearly || 0, features: ['Generic AI chatbot', 'Limited business chatbot', 'Basic data visualization', '15 chats per month', '30-day chat history', 'Community support'], popular: false },
-          { id: 'starter', title: 'Starter', subtitle: 'For students and learners', monthlyPrice: pricing.starter?.monthly || 199, yearlyPrice: pricing.starter?.yearly || 1999, features: ['Generic + Business chatbot', 'Interactive visualization', '150 chats per month', '60-day chat history', 'Export chat history', 'Priority support'], popular: true },
-          { id: 'plus', title: 'Plus', subtitle: 'For power users', monthlyPrice: pricing.plus?.monthly || 499, yearlyPrice: pricing.plus?.yearly || 4999, features: ['Advanced business workflows', 'Enhanced data visualization', '600 chats per month', 'File upload (50 files, 100MB)', 'Premium support', 'Export reports & charts'], popular: false },
-          { id: 'pro', title: 'Pro', subtitle: 'For teams & SMEs', monthlyPrice: pricing.pro?.monthly || 1499, yearlyPrice: pricing.pro?.yearly || 14999, features: ['Team collaboration (5 users)', 'Advanced analytics', 'Custom branding', 'API access', '1,500 chats per month', 'Priority technical support'], popular: false },
-        ];
-        const businessPlans = [
-          { id: 'business', title: 'Business', subtitle: 'For enterprises', monthlyPrice: pricing.business?.monthly || 4999, yearlyPrice: pricing.business?.yearly || 49999, features: ['Unlimited chats', 'Unlimited file uploads', 'Dedicated support manager', 'Team management', 'Advanced security', 'SLA guarantee'], popular: false },
-        ];
+        const pricing = mergePricingWithCatalog(await getCurrentPricing());
+        const personalPlans = PERSONAL_PLAN_IDS.map((planId) => pricing[planId]);
+        const businessPlans = BUSINESS_PLAN_IDS.map((planId) => pricing[planId]);
         setPlansData({ personal: personalPlans, business: businessPlans });
       } catch (error) { 
         console.error('Error fetching pricing:', error); 

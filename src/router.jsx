@@ -8,7 +8,6 @@ import AdminProtectedRoute from "./features/auth/components/AdminProtectedRoute"
 import SuperAdminProtectedRoute from "./features/auth/components/SuperAdminProtectedRoute";
 import ProtectedRoute from "./features/auth/components/ProtectedRoute";
 import ErrorPage from "./pages/ErrorPage";
-import LoadingSpinner from "./components/loading/LoadingSpinner";
 import HeroSkeleton from "./components/skeletons/HeroSkeleton";
 import useRoleRedirect from "./hooks/useRoleRedirect";
 import AuthProvider from "./context/AuthContext";
@@ -48,7 +47,13 @@ const Workspace = createLazyComponent(() => import("./pages/WorkspacePage.jsx"),
 const LazyWrapper = memo(({ children, useHeroSkeleton = false }) => {
   const fallback = useHeroSkeleton
     ? <HeroSkeleton />
-    : <LoadingSpinner size="default" message="Loading..." />;
+    : (
+      <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0a0d14]">
+        <div className="text-[10px] uppercase font-mono tracking-widest text-zinc-600 animate-pulse">
+          Initializing Interface...
+        </div>
+      </div>
+    );
   return <Suspense fallback={fallback}>{children}</Suspense>;
 });
 LazyWrapper.displayName = 'LazyWrapper';
@@ -164,3 +169,4 @@ const router = createBrowserRouter([
 ]);
 
 export default router;
+

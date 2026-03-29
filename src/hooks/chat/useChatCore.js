@@ -1,7 +1,10 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { useAuth } from '../../context/AuthContext';
 import { useTheme } from '../../context/ThemeContext';
 import ChatService from '../../services/chatService';
+import { isAssistantLikeRole } from './useChatUtils';
+import { normalizeChatModeSelection } from '../../features/chat/utils/chatMode.js';
+
 
 export default function useChatCore({
     currentSessionId,
@@ -27,7 +30,7 @@ export default function useChatCore({
     const [currentMessageId, setCurrentMessageId] = useState(null);
     const [userUniqueId, setUserUniqueId] = useState(null);
     const [showScrollToBottom, setShowScrollToBottom] = useState(false);
-    const [internalChatMode, setInternalChatMode] = useState('normal');
+    const [internalChatMode, setInternalChatMode] = useState('auto');
     const [isDeepSearchActive, setIsDeepSearchActive] = useState(false);
     const [fileUploads, setFileUploads] = useState({});
     
@@ -36,8 +39,12 @@ export default function useChatCore({
     const [internalActivePersonality, setInternalActivePersonality] = useState(null);
 
     // Derived State
-    const chatMode = externalChatMode !== undefined ? externalChatMode : internalChatMode;
-    const setChatMode = externalOnChatModeChange !== undefined ? externalOnChatModeChange : setInternalChatMode;
+    const chatMode = normalizeChatModeSelection(externalChatMode !== undefined ? externalChatMode : internalChatMode);
+    const baseSetChatMode = externalOnChatModeChange !== undefined ? externalOnChatModeChange : setInternalChatMode;
+    const setChatMode = useCallback(
+        (nextMode) => baseSetChatMode(normalizeChatModeSelection(nextMode)),
+        [baseSetChatMode]
+    );
 
     const personalities = externalPersonalities !== undefined ? externalPersonalities : internalPersonalities;
     const setPersonalities = externalPersonalities !== undefined ? (() => {}) : setInternalPersonalities;
@@ -59,7 +66,7 @@ export default function useChatCore({
             if (msg.role === 'user') {
                 if (currentPair) pairs.push(currentPair);
                 currentPair = { question: msg, answer: null, id: msg.id };
-            } else if (msg.role === 'bot' && currentPair) {
+            } else if (isAssistantLikeRole(msg.role) && currentPair) {
                 currentPair.answer = msg;
             }
         });

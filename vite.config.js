@@ -11,7 +11,7 @@ export default defineConfig({
     rollupOptions: {
       output: {
         manualChunks: {
-          vendor: ['react', 'react-dom'],
+          vendor: ['react', 'react-dom', 'react/jsx-runtime', 'react-dom/client'],
           firebase: ['firebase/app', 'firebase/auth', 'firebase/firestore'],
           router: ['react-router-dom'],
           ui: ['lucide-react', 'react-hot-toast', 'framer-motion'],
@@ -53,12 +53,12 @@ export default defineConfig({
     },
     proxy: {
       '/api': {
-        target: 'http://localhost:8080',
+        target: 'http://127.0.0.1:8080',
         changeOrigin: true,
         configure: (proxy) => proxy.on('error', () => {})
       },
       '/ws': {
-        target: 'ws://localhost:8080',
+        target: 'ws://127.0.0.1:8080',
         ws: true,
         changeOrigin: true,
         configure: (proxy) => proxy.on('error', () => {})

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { useAuth } from '../../../context/AuthContext.jsx';
 import { useNavigate } from 'react-router-dom';
 import ErrorPage from '../../../pages/ErrorPage';
@@ -9,6 +9,14 @@ const AdminProtectedRoute = ({ children }) => {
   const [isAdmin, setIsAdmin] = useState(false);
   const [roleLoading, setRoleLoading] = useState(true);
   const [error, setError] = useState(null);
+  const roleRefreshAttemptedRef = useRef({ uid: null, attempted: false });
+
+  useEffect(() => {
+    const uid = currentUser?.uid || null;
+    if (roleRefreshAttemptedRef.current.uid !== uid) {
+      roleRefreshAttemptedRef.current = { uid, attempted: false };
+    }
+  }, [currentUser?.uid]);
 
   useEffect(() => {
     const checkAdminRole = async () => {
@@ -28,9 +36,13 @@ const AdminProtectedRoute = ({ children }) => {
           throw roleError;
         }
 
-        // Ensure we have the latest profile if role is still missing
+        // Ensure we have the latest profile if role is still missing (attempt once per user).
         if (!role) {
-          await refreshUserProfile?.();
+          if (!roleRefreshAttemptedRef.current.attempted) {
+            roleRefreshAttemptedRef.current.attempted = true;
+            await refreshUserProfile?.();
+            return;
+          }
         }
 
         const normalizedRole = role === 'super_admin' ? 'superadmin' : role;
@@ -58,7 +70,7 @@ const AdminProtectedRoute = ({ children }) => {
     };
 
     checkAdminRole();
-  }, [currentUser, loading]);
+  }, [currentUser?.uid, loading, role, roleError, refreshUserProfile]);
 
   // Handle navigation in useEffect to avoid React warning
   useEffect(() => {

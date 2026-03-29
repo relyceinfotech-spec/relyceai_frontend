@@ -230,7 +230,7 @@ export default function SharedChat() {
                         msg={msg}
                         index={index}
                         theme="dark"
-                        chatMode="normal"
+                        chatMode="smart"
                         onCopyMessage={() => navigator.clipboard.writeText(msg.content)}
                         isLastMessage={index === chatData.messages.length - 1}
                     />

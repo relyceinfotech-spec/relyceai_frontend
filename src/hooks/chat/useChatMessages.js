@@ -1,10 +1,14 @@
-﻿import { useEffect, useCallback, useRef } from 'react';
+import { useEffect, useCallback, useRef } from 'react';
 import { doc, getDoc } from 'firebase/firestore';
 import { db, auth } from '../../utils/firebaseConfig';
 import ShareService from '../../services/shareService';
 import PDFService from '../../services/pdfService';
 import ChatService from '../../services/chatService';
-import { WebSocketChatManager, streamChatMessage, API_BASE_URL } from '../../utils/api';
+import { WebSocketChatManager, streamChatMessage, cancelChatTask, confirmChatTask } from '../../utils/api';
+import { isAssistantLikeRole } from './useChatUtils';
+import { normalizeChatMode, resolveRuntimeChatMode } from '../../features/chat/utils/chatMode.js';
+
+const WS_CHAT_ENABLED = String(import.meta.env.VITE_WS_CHAT_ENABLED || '').toLowerCase() === 'true';
 
 let sharedWsManager = null;
 let currentSessionId = null;
@@ -42,9 +46,365 @@ export default function useChatMessages({ core, currentSessionId, userId, onMess
     const wsManagerRef = useRef(null);
     const tokenBufferRef = useRef('');
     const pendingFlushRef = useRef('');
-    const streamModeRef = useRef('normal');
+    const streamModeRef = useRef('smart');
+    const finalAnswerRef = useRef('');
     const wsCallbacksRef = useRef(null);
     const tokenProviderRef = useRef(null);
+
+    const sanitizeCasualReply = useCallback((text) => {
+        if (!text) return '';
+        let out = String(text);
+        out = out.replace(/\r/g, '');
+        out = out.replace(/^\s*direct answer\s*:?\s*/i, '');
+        out = out.replace(/\bFollow-up Questions?:[\s\S]*$/i, '');
+        out = out.replace(/^\s*#+\s*/gm, '');
+        out = out.replace(/(^|\n)\s*[^\n]{0,20}#{2,}\s*/g, '$1');
+        out = out.replace(/\n{3,}/g, '\n\n').trim();
+        return out;
+    }, []);
+
+    const normalizeReasoningLabel = useCallback((value) => {
+        let out = String(value || '');
+        out = out.replace(/\b(inbuild|inbuilt|built[-\s]?in)\b/gi, 'LLM');
+        out = out.replace(/\bLLM\s+reasoning\s+done\b/gi, 'LLM reasoning complete');
+        out = out.replace(/\s+/g, ' ').trim();
+        return out;
+    }, []);
+
+    const _shortText = useCallback((value, max = 120) => {
+        const normalized = normalizeReasoningLabel(value);
+        if (!normalized) return '';
+        if (normalized.length <= max) return normalized;
+        return `${normalized.slice(0, Math.max(0, max - 3))}...`;
+    }, [normalizeReasoningLabel]);
+
+    const formatExecutionLogEntry = useCallback((rawPayload) => {
+        const payload = (rawPayload && typeof rawPayload === 'object')
+            ? rawPayload
+            : { message: String(rawPayload || '').trim() };
+
+        const state = String(payload.agent_state || payload.event || '').trim().toLowerCase();
+        const tool = _shortText(payload.tool || payload.name || '', 64);
+        const topic = _shortText(payload.topic || payload.label || payload.message || '', 140);
+        const sourceTitle = _shortText(payload?.source?.title || payload?.source?.url || '', 120);
+        const status = String(payload.status || '').trim().toLowerCase();
+        const error = _shortText(payload.error || '', 120);
+        const silent = Boolean(payload.silent || payload.ui_silent || payload.hidden);
+        const mode = String(payload.mode || '').trim().toLowerCase();
+        const lane = String(payload.lane || '').trim().toLowerCase();
+        const nodeCount = Number(payload.node_count || 0);
+        const similarity = Number(payload.similarity || 0);
+        const rawResultCount = Number(payload.result_count ?? payload.resultCount ?? 0);
+        const resultCount = Number.isFinite(rawResultCount) && rawResultCount > 0 ? Math.floor(rawResultCount) : 0;
+        const resultItems = Array.isArray(payload.result_items)
+            ? payload.result_items
+                .map((item) => {
+                    if (!item || typeof item !== 'object') return null;
+                    const title = _shortText(item.title || item.name || item.snippet || item.url || item.link || '', 80);
+                    const url = String(item.url || item.link || '').trim();
+                    if (!title) return null;
+                    return { title, url };
+                })
+                .filter(Boolean)
+                .slice(0, 10)
+            : [];
+        const readTitle = _shortText(payload.read_title || payload.readTitle || '', 140);
+        const readUrl = String(payload.read_url || payload.readUrl || '').trim();
+        const resultHint = _shortText(payload.result_hint || payload.resultHint || '', 220);
+        const argsPreview = _shortText(payload.args_preview || payload.argsPreview || '', 160);
+        const nodeId = _shortText(payload.node_id || payload.nodeId || '', 64);
+        const toolLower = tool.toLowerCase();
+        const isSearchTool = toolLower.includes('search') || toolLower.includes('news') || toolLower.includes('weather') || toolLower.includes('finance');
+        const isReadTool = toolLower.includes('summarize_url') || toolLower.includes('web_fetch') || toolLower.includes('extract');
+        const prettyTopic = topic || sourceTitle;
+        const callKey = [nodeId, toolLower, argsPreview || prettyTopic].filter(Boolean).join('|').toLowerCase();
+
+        const makeEntry = (title, detail = '', kind = 'progress', statusValue = 'running', extra = {}) => {
+            const safeTitle = _shortText(title, 180);
+            const safeDetail = _shortText(detail, 280);
+            if (!safeTitle) return null;
+            const dedupeSeed = [
+                state,
+                safeTitle,
+                safeDetail,
+                kind,
+                statusValue,
+                extra?.resultCount ? `count:${extra.resultCount}` : '',
+                Array.isArray(extra?.resultItems)
+                    ? `items:${extra.resultItems.map((x) => x?.title || '').join('|')}`
+                    : '',
+            ].join('|').toLowerCase();
+            return {
+                text: safeTitle,
+                title: safeTitle,
+                detail: safeDetail,
+                kind,
+                status: statusValue,
+                state,
+                dedupeKey: dedupeSeed,
+                callKey,
+                ...extra,
+            };
+        };
+
+        if (state === 'tool_call') {
+            if (isSearchTool) {
+                return makeEntry(
+                    prettyTopic ? `Searching "${prettyTopic}"` : 'Searching the web',
+                    prettyTopic
+                        ? `Looking for relevant and recent sources about "${prettyTopic}".`
+                        : 'Looking for relevant and recent sources.',
+                    'search',
+                    'running',
+                );
+            }
+            if (isReadTool) {
+                return makeEntry(
+                    prettyTopic ? `Reading "${prettyTopic}"` : 'Reading source',
+                    'Extracting useful information from the selected source.',
+                    'read',
+                    'running',
+                );
+            }
+            if (topic) return makeEntry(`Using ${tool || 'tool'}`, `Input: ${topic}`, 'tool', 'running');
+            return makeEntry(`Using ${tool || 'tool'}`, '', 'tool', 'running');
+        }
+
+        if (state === 'tool_result') {
+            if (silent) return null;
+            if (status === 'ok' || status === 'success' || status === 'completed') {
+                if (isSearchTool) {
+                    const searchDetail = resultCount > 0
+                        ? `Found ${resultCount} results`
+                        : (resultHint || 'Search completed');
+                    return makeEntry(
+                        prettyTopic ? `Searched "${prettyTopic}"` : 'Search completed',
+                        searchDetail,
+                        'search',
+                        'done',
+                        {
+                            resultCount,
+                            resultItems,
+                            resultHint: searchDetail,
+                        },
+                    );
+                }
+                if (isReadTool) {
+                    const readLabel = readTitle || prettyTopic;
+                    return makeEntry(
+                        readLabel ? `Read "${readLabel}"` : 'Read completed',
+                        resultHint || 'Key details extracted from the source.',
+                        'read',
+                        'done',
+                        {
+                            readTitle: readLabel || '',
+                            readUrl,
+                        },
+                    );
+                }
+                return makeEntry(`Finished ${tool || 'tool'}`, 'Analyzing tool output.', 'tool', 'done');
+            }
+            if (status === 'blocked') {
+                if (isSearchTool) {
+                    return makeEntry(
+                        prettyTopic ? `Search blocked for "${prettyTopic}"` : 'Search blocked',
+                        error || 'Tool access was blocked by policy or permissions.',
+                        'search',
+                        'error',
+                    );
+                }
+                if (isReadTool) {
+                    return makeEntry(
+                        prettyTopic ? `Read blocked for "${prettyTopic}"` : 'Read blocked',
+                        error || 'Tool access was blocked by policy or permissions.',
+                        'read',
+                        'error',
+                    );
+                }
+                return makeEntry(`Blocked ${tool || 'tool'}`, error || 'Tool access was blocked by policy or permissions.', 'tool', 'error');
+            }
+            if (status === 'failed' || status === 'error') {
+                const lowerError = String(error || '').toLowerCase();
+                if (
+                    isReadTool &&
+                    (
+                        lowerError.includes('robots.txt') ||
+                        lowerError.includes('does not allow automated scraping') ||
+                        lowerError.includes('http 403') ||
+                        lowerError.includes('forbidden') ||
+                        lowerError.includes('access denied') ||
+                        lowerError.includes('no_readable_url_candidates')
+                    )
+                ) {
+                    return null;
+                }
+                if (isSearchTool) {
+                    return makeEntry(
+                        prettyTopic ? `Search failed for "${prettyTopic}"` : 'Search failed',
+                        error || 'Live web retrieval failed. No reliable sources were fetched.',
+                        'search',
+                        'error',
+                    );
+                }
+                if (isReadTool) {
+                    return makeEntry(
+                        prettyTopic ? `Read failed for "${prettyTopic}"` : 'Read failed',
+                        error || 'Source retrieval failed.',
+                        'read',
+                        'error',
+                    );
+                }
+                return makeEntry(`Failed ${tool || 'tool'}`, error || 'Tool execution failed.', 'tool', 'error');
+            }
+            if (status === 'throttled') {
+                if (isSearchTool) {
+                    return makeEntry(
+                        prettyTopic ? `Search throttled for "${prettyTopic}"` : 'Search throttled',
+                        error || 'Search provider throttled this request. Retry in a moment.',
+                        'search',
+                        'error',
+                    );
+                }
+                if (isReadTool) {
+                    return makeEntry(
+                        prettyTopic ? `Read throttled for "${prettyTopic}"` : 'Read throttled',
+                        error || 'Provider throttled this request. Retry in a moment.',
+                        'read',
+                        'error',
+                    );
+                }
+                return makeEntry(`Throttled ${tool || 'tool'}`, error || 'Provider throttled this request. Retry in a moment.', 'tool', 'error');
+            }
+            return makeEntry(`Result from ${tool || 'tool'} received`, '', 'tool', 'done');
+        }
+
+        if (state === 'planning_complete') {
+            if (mode === 'query_cache_hit') {
+                return makeEntry(
+                    'Plan ready - using recent cached answer',
+                    'A close recent query match was found, so response can be produced quickly.',
+                    'planning',
+                    'done',
+                );
+            }
+            if (mode === 'retrieval_hit') {
+                const suffix = similarity > 0 ? ` (${Math.round(similarity * 100)}% match)` : '';
+                return makeEntry(
+                    `Plan ready - using trusted knowledge cache${suffix}`,
+                    'Verified stored knowledge was found and selected for response generation.',
+                    'planning',
+                    'done',
+                );
+            }
+            if (mode === 'confidence_gate') {
+                return makeEntry(
+                    'Plan ready - no tool run needed',
+                    'This request can be answered directly without external tool calls.',
+                    'planning',
+                    'done',
+                );
+            }
+            if (mode === 'fast_path') {
+                return makeEntry(
+                    'Plan ready - fast tool path selected',
+                    'A quick path was chosen for faster response.',
+                    'planning',
+                    'done',
+                );
+            }
+            if (nodeCount > 0) return makeEntry(`Plan ready with ${nodeCount} steps`, '', 'planning', 'done');
+            return makeEntry('Plan ready', '', 'planning', 'done');
+        }
+
+        if (state === 'running') {
+            if (lane === 'heavy') return makeEntry('Running on heavy lane', 'Using deeper reasoning and tool workflow.', 'planning', 'running');
+            if (lane === 'fast') return makeEntry('Running on fast lane', 'Using low-latency path for quick reply.', 'planning', 'running');
+            return makeEntry('Running', '', 'planning', 'running');
+        }
+
+        const stateMap = {
+            task_queued: makeEntry('Queued for execution', 'Request is waiting in queue.', 'planning', 'running'),
+            queued: makeEntry('Queued', 'Request is waiting in queue.', 'planning', 'running'),
+            message_start: makeEntry('Agent started', 'Execution has started.', 'planning', 'running'),
+            task_started: makeEntry('Task started', 'Beginning the task workflow.', 'planning', 'running'),
+            initializing: makeEntry('Understanding request', topic || 'Analyzing intent and constraints.', 'reasoning', 'running'),
+            analyzing_request: makeEntry('Understanding your request', topic || 'Breaking down the request into actionable steps.', 'reasoning', 'running'),
+            no_tool_needed: makeEntry(
+                topic || 'I can answer this directly without external tools.',
+                '',
+                'reasoning',
+                'done'
+            ),
+            retrieval_hit: makeEntry('Using cached verified knowledge', topic || 'Found relevant validated context in memory.', 'reasoning', 'done'),
+            tool_memory_hit: makeEntry('Reusing trusted memory evidence', topic || 'Loaded relevant facts from prior verified runs.', 'reasoning', 'done'),
+            route_selected: makeEntry(topic || 'Selected execution route', '', 'reasoning', 'running'),
+            planning: makeEntry(topic || 'Planning next steps', '', 'reasoning', 'running'),
+            workspace_update: makeEntry('Updated findings from latest step', '', 'reasoning', 'running'),
+            verification_started: makeEntry('Verifying evidence', 'Checking source quality and consistency.', 'reasoning', 'running'),
+            verification_complete: makeEntry('Verification complete', 'Evidence checks finished.', 'reasoning', 'done'),
+            confidence_update: makeEntry('Updated confidence estimate', '', 'reasoning', 'running'),
+            critic_check: makeEntry('Running quality check', 'Reviewing response quality and safety.', 'reasoning', 'running'),
+            repair_cycle: makeEntry('Repairing strategy after review', 'Adjusting the plan based on quality checks.', 'reasoning', 'running'),
+            additional_research_triggered: makeEntry('Need more evidence - continuing research', '', 'reasoning', 'running'),
+            synthesis_started: makeEntry('Drafting final response', 'Composing final answer from findings.', 'reasoning', 'running'),
+            final_answer: makeEntry('Final answer ready', '', 'success', 'done'),
+            completed: makeEntry('Completed', '', 'success', 'done'),
+            cancelled: makeEntry('Cancelled', '', 'error', 'error'),
+            progress: makeEntry(topic && topic !== state ? topic : 'Working on next step', '', 'reasoning', 'running'),
+            task_progress: makeEntry(topic && topic !== state ? topic : 'Working on next step', '', 'reasoning', 'running'),
+            source: makeEntry('Found source', sourceTitle || '', 'source', 'done'),
+        };
+
+        if (stateMap[state]) return stateMap[state];
+        if (topic) return makeEntry(topic, '', 'reasoning', 'running');
+        if (state) return makeEntry(_shortText(state.replace(/_/g, ' '), 80), '', 'reasoning', 'running');
+        return null;
+    }, [_shortText]);
+
+    const appendExecutionLog = useCallback((logs, payload) => {
+        const current = Array.isArray(logs) ? logs : [];
+        const nextEntry = formatExecutionLogEntry(payload);
+        if (!nextEntry) return current;
+
+        const getText = (entry) => {
+            if (typeof entry === 'string') return String(entry).trim();
+            if (entry && typeof entry === 'object') return String(entry.text || entry.title || '').trim();
+            return '';
+        };
+        const getKey = (entry) => {
+            if (entry && typeof entry === 'object' && entry.dedupeKey) return String(entry.dedupeKey);
+            return getText(entry).toLowerCase();
+        };
+
+        const prev = current[current.length - 1];
+        if (prev && getKey(prev) === getKey(nextEntry)) return current;
+
+        const lowerNext = getText(nextEntry).toLowerCase();
+        const hasText = (needle) => current.some((x) => getText(x).toLowerCase() === needle);
+        if (lowerNext === 'queued' && hasText('queued')) return current;
+        if (lowerNext === 'task started' && hasText('agent started')) return current;
+        
+        let merged = current;
+        // Replace stale running "Searching..." / "Reading..." row with the completed row.
+        if (nextEntry.state === 'tool_result' && nextEntry.callKey) {
+            merged = current.filter((entry) => {
+                if (!entry || typeof entry !== 'object') return true;
+                const sameCall = String(entry.callKey || '') === String(nextEntry.callKey || '');
+                const isRunning = String(entry.status || '').toLowerCase() === 'running';
+                const isToolCall = String(entry.state || '').toLowerCase() === 'tool_call';
+                return !(sameCall && isRunning && isToolCall);
+            });
+        }
+        if (String(nextEntry.state || '').toLowerCase() === 'final_answer') {
+            merged = merged.filter((entry) => {
+                if (!entry || typeof entry !== 'object') return true;
+                const status = String(entry.status || '').toLowerCase();
+                const kind = String(entry.kind || '').toLowerCase();
+                return !(status === 'running' && (kind === 'search' || kind === 'read' || kind === 'tool'));
+            });
+        }
+        return [...merged, nextEntry].slice(-80);
+    }, [formatExecutionLogEntry]);
 
     const finalizeStream = useCallback(() => {
         const botMsgId = streamingMessageIdRef.current;
@@ -58,7 +418,13 @@ export default function useChatMessages({ core, currentSessionId, userId, onMess
             msg.id === botMsgId
                 ? {
                     ...msg,
-                    content: (msg.content || '') + pendingChunk + chunk,
+                    content: (() => {
+                        const streamed = (msg.content || '') + pendingChunk + chunk;
+                        const structuredAnswer = msg?.structured_response?.answer || finalAnswerRef.current;
+                        if (streamed.trim()) return streamed;
+                        if (structuredAnswer) return sanitizeCasualReply(structuredAnswer);
+                        return streamed;
+                    })(),
                     isStreaming: false,
                     isGenerating: false,
                     isSearching: false
@@ -69,7 +435,15 @@ export default function useChatMessages({ core, currentSessionId, userId, onMess
         setIsDeepSearchActive(false);
         setCurrentMessageId(null);
         streamingMessageIdRef.current = null;
-    }, [setMessages, setBotTyping, setIsDeepSearchActive, setCurrentMessageId]);
+        finalAnswerRef.current = '';
+    }, [setMessages, setBotTyping, setIsDeepSearchActive, setCurrentMessageId, sanitizeCasualReply]);
+
+    const _hasLiveMessageText = useCallback((msg) => {
+        const current = String(msg?.content || '').trim();
+        const buffered = String(tokenBufferRef.current || '').trim();
+        const pending = String(pendingFlushRef.current || '').trim();
+        return Boolean(current || buffered || pending);
+    }, []);
 
     const failStream = useCallback((err) => {
         const botMsgId = streamingMessageIdRef.current;
@@ -100,6 +474,7 @@ export default function useChatMessages({ core, currentSessionId, userId, onMess
         setIsDeepSearchActive(false);
         setCurrentMessageId(null);
         streamingMessageIdRef.current = null;
+        finalAnswerRef.current = '';
     }, [finalizeStream, messagesRef, setMessages, setBotTyping, setIsDeepSearchActive, setCurrentMessageId]);
 
     // --- UI Control Global Wiring ---
@@ -107,15 +482,12 @@ export default function useChatMessages({ core, currentSessionId, userId, onMess
         window.handleAgentConfirm = async (confirmStatus, executionId) => {
             if (!executionId) return;
             try {
-                await fetch(`${API_BASE_URL}/agent/confirm/${executionId}`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ confirm: confirmStatus })
-                });
+                await confirmChatTask(executionId, confirmStatus);
                 
                 // Optimistically update the UI to avoid lag
                 setMessages(prev => prev.map(msg => {
-                    if (msg.agentMeta?.execution_id === executionId) {
+                    const targetId = msg.agentMeta?.task_id || msg.agentMeta?.execution_id;
+                    if (targetId === executionId) {
                         return {
                             ...msg,
                             agentMeta: {
@@ -140,6 +512,15 @@ export default function useChatMessages({ core, currentSessionId, userId, onMess
 
     useEffect(() => {
         let isActive = true;
+
+        if (!WS_CHAT_ENABLED) {
+            if (wsManagerRef.current) {
+                wsManagerRef.current.disconnect();
+                wsManagerRef.current = null;
+            }
+            setWsConnected(false);
+            return () => {};
+        }
 
         if (!userId || typeof userId !== 'string' || userId.length < 10) return;
 
@@ -215,7 +596,8 @@ export default function useChatMessages({ core, currentSessionId, userId, onMess
                         } else if (infoText.startsWith("Searching with:")) {
                             isSearching = true;
                             searchQuery = infoText.replace("Searching with:", "").trim();
-                            tokenBufferRef.current = ""; // Clear buffer on search start
+                            tokenBufferRef.current = "";
+            finalAnswerRef.current = ""; // Clear buffer on search start
                             pendingFlushRef.current = "";
                         } else if (infoText.startsWith("INTEL:")) {
                             // Intelligence metadata from backend
@@ -241,17 +623,10 @@ export default function useChatMessages({ core, currentSessionId, userId, onMess
 
                                 agentMeta = nextMeta;
                                 
-                                const buildLogEntry = (info) => {
-                                  if (!info.agent_state) return null;
-                                  return `[${info.agent_state}] ${info.tool || info.topic || info.trust || info.freshness || ''}`.trim();
-                                };
-                                
-                                const newLog = buildLogEntry(parsedInfo);
-                                if (newLog && !executionLog.includes(newLog)) {
-                                    executionLog = [...executionLog, newLog].slice(-50); // Cap at 50 entries
-                                }
+                                executionLog = appendExecutionLog(executionLog, parsedInfo);
                             } catch (e) {
                                 // Not JSON or fallback string
+                                executionLog = appendExecutionLog(executionLog, { message: infoText });
                             }
                         }
 
@@ -273,6 +648,33 @@ export default function useChatMessages({ core, currentSessionId, userId, onMess
                             followups: nextFollowups,
                             actionChips: nextActionChips,
                             followupMode: nextFollowupMode,
+                        };
+                    }));
+                },
+                onFinalAnswer: (structured) => {
+                    const botMsgId = streamingMessageIdRef.current;
+                    if (!botMsgId || !structured || typeof structured !== 'object') return;
+                    const resolvedFinal = String(structured?.answer || '').trim();
+                    if (resolvedFinal) {
+                        finalAnswerRef.current = resolvedFinal;
+                    }
+
+                    setMessages(prev => prev.map(msg => {
+                        if (msg.id !== botMsgId) return msg;
+                        const canHydrateFromFinal = Boolean(resolvedFinal) && !_hasLiveMessageText(msg);
+                        return {
+                            ...msg,
+                            schema_version: structured?.schema_version || msg.schema_version,
+                            answer: structured?.answer || msg.answer,
+                            key_points: Array.isArray(structured?.key_points) ? structured.key_points : (msg.key_points || []),
+                            sources: Array.isArray(structured?.sources) ? structured.sources : (msg.sources || []),
+                            confidence: typeof structured?.confidence === 'number' ? structured.confidence : msg.confidence,
+                            confidence_level: structured?.confidence_level || msg.confidence_level,
+                            answer_type: structured?.answer_type || msg.answer_type,
+                            metadata: structured?.metadata || msg.metadata,
+                            blocks: Array.isArray(structured?.blocks) ? structured.blocks : (msg.blocks || []),
+                            structured_response: structured,
+                            content: canHydrateFromFinal ? sanitizeCasualReply(resolvedFinal) : msg.content,
                         };
                     }));
                 },
@@ -324,8 +726,9 @@ useEffect(() => {
             isScheduled = false;
             animationFrameId = null;
 
-            // Keep agent streaming unchanged; smooth normal/deepsearch by batching larger token chunks.
-            const isNormalLike = streamModeRef.current === 'normal' || streamModeRef.current === 'deepsearch';
+            // Keep agent/research_pro streaming unchanged; smooth smart by batching larger token chunks.
+            const modeNow = normalizeChatMode(streamModeRef.current);
+            const isNormalLike = modeNow === 'smart';
             const flushIntervalMs = isNormalLike ? 80 : 40;
             const flushCharThreshold = isNormalLike ? 96 : 48;
 
@@ -394,6 +797,10 @@ useEffect(() => {
     }, []);
 
     const handleReconnect = async () => {
+        if (!WS_CHAT_ENABLED) {
+            setWsConnected(false);
+            return;
+        }
         if (isReconnecting) return;
         setIsReconnecting(true);
         try {
@@ -410,14 +817,14 @@ useEffect(() => {
         let activeExecutionId = null;
         if (botMsgId) {
             const currentMsg = messagesRef.current?.find(m => m.id === botMsgId);
-            if (currentMsg?.agentMeta?.execution_id) {
-                activeExecutionId = currentMsg.agentMeta.execution_id;
+            if (currentMsg?.agentMeta?.task_id || currentMsg?.agentMeta?.execution_id) {
+                activeExecutionId = currentMsg.agentMeta.task_id || currentMsg.agentMeta.execution_id;
             }
         }
         
         if (activeExecutionId) {
             try {
-                await fetch(`${API_BASE_URL}/agent/cancel/${activeExecutionId}`, { method: 'POST' });
+                await cancelChatTask(activeExecutionId);
             } catch (err) {
                 console.warn('Failed to send cancel signal to agent execution branch', err);
             }
@@ -432,6 +839,7 @@ useEffect(() => {
         setIsDeepSearchActive(false);
         setCurrentMessageId(null);
         streamingMessageIdRef.current = null;
+        finalAnswerRef.current = '';
     }, [setBotTyping, setCurrentMessageId, setIsDeepSearchActive, messagesRef]);
 
     const handleFileUpload = useCallback((fileName) => {
@@ -473,7 +881,7 @@ useEffect(() => {
         }
 
         if (/\b(last answer|last response|last message)\b/.test(lower)) {
-            const lastBot = [...(messagesRef.current || [])].reverse().find(m => m.role === 'bot' && (m.content || '').trim());
+            const lastBot = [...(messagesRef.current || [])].reverse().find(m => isAssistantLikeRole(m.role) && (m.content || '').trim());
             if (lastBot) {
                 return { type: 'text', content: String(lastBot.content || ''), title: 'Last Assistant Response' };
             }
@@ -565,6 +973,7 @@ useEffect(() => {
 
         if (trimmedText || files.length > 0) {
             tokenBufferRef.current = "";
+            finalAnswerRef.current = "";
             const tempMessageId = `msg_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
             const botMessageId = `bot_${Date.now()}_${Math.random().toString(36).substr(2, 5)}`;
             streamingMessageIdRef.current = botMessageId;
@@ -620,18 +1029,22 @@ useEffect(() => {
 
             // Send via WebSocket (preferred), fallback to SSE if not connected
             try {
-                const effectiveMode = isWebSearch ? 'deepsearch' : chatMode;
+                const effectiveMode = isWebSearch ? 'research_pro' : resolveRuntimeChatMode(chatMode, text);
                 streamModeRef.current = effectiveMode;
-                const personalityToSend = effectiveMode === 'normal' ? activePersonality : null;
+                const personalityToSend = effectiveMode === 'smart' ? activePersonality : null;
                 const userSettings = userProfile?.settings || null;
                 const fileIds = files.map((f) => f.fileId).filter(Boolean);
 
-                if (wsManagerRef.current && wsManagerRef.current.isConnected()) {
+                // Reliability-first: keep agent on SSE queued stream path until WS path is fully stable.
+                const preferWs = false;
+                if (preferWs && wsManagerRef.current && wsManagerRef.current.isConnected()) {
                     wsManagerRef.current.sendMessage(text, effectiveMode, personalityToSend, userSettings);
                     return;
                 }
 
-                setWsConnected(false);
+                if (!preferWs) {
+                    setWsConnected(false);
+                }
 
                 for await (const chunk of streamChatMessage(
                     text,
@@ -639,7 +1052,8 @@ useEffect(() => {
                     userId,
                     effectiveMode,
                     personalityToSend,
-                    userSettings
+                    userSettings,
+                    fileIds
                 )) {
                     if (chunk.type === 'token') {
                         tokenBufferRef.current += chunk.content;
@@ -647,27 +1061,58 @@ useEffect(() => {
                         // Dispatch to the message's agentMeta to be tracked by AgentMetaBlock
                         setMessages(prev => prev.map(msg => {
                             if (msg.id === streamingMessageIdRef.current) {
+                                const payload = (chunk.payload && typeof chunk.payload === 'object')
+                                  ? chunk.payload
+                                  : { message: String(chunk.payload || '').trim() };
                                 const currentLogs = msg.executionLog || [];
-                                const newLog = chunk.payload.agent_state 
-                                  ? `[${chunk.payload.agent_state}] ${chunk.payload.tool || chunk.payload.topic || ''}`.trim()
-                                  : null;
+                                const nextLogs = appendExecutionLog(currentLogs, payload);
+                                const infoAnswer = String(payload?.answer || '').trim();
+                                if (infoAnswer) {
+                                  finalAnswerRef.current = infoAnswer;
+                                }
+                                const canHydrateFromInfoAnswer = Boolean(infoAnswer) && !_hasLiveMessageText(msg);
                                 
                                 return {
                                     ...msg,
-                                    agentMeta: chunk.payload.agent_state ? { ...msg.agentMeta, ...chunk.payload } : (msg.agentMeta || {}),
-                                    executionLog: newLog && !currentLogs.includes(newLog) 
-                                      ? [...currentLogs, newLog] 
-                                      : currentLogs,
-                                    followups: Array.isArray(chunk.payload?.followups)
-                                      ? chunk.payload.followups
+                                    agentMeta: payload.agent_state ? { ...msg.agentMeta, ...payload } : (msg.agentMeta || {}),
+                                    executionLog: nextLogs,
+                                    content: canHydrateFromInfoAnswer ? sanitizeCasualReply(infoAnswer) : msg.content,
+                                    followups: Array.isArray(payload?.followups)
+                                      ? payload.followups
                                       : (Array.isArray(msg.followups) ? msg.followups : []),
-                                    actionChips: Array.isArray(chunk.payload?.action_chips)
-                                      ? chunk.payload.action_chips
+                                    actionChips: Array.isArray(payload?.action_chips)
+                                      ? payload.action_chips
                                       : (Array.isArray(msg.actionChips) ? msg.actionChips : []),
-                                    followupMode: chunk.payload?.followup_mode || msg.followupMode || null,
+                                    followupMode: payload?.followup_mode || msg.followupMode || null,
                                 };
                             }
                             return msg;
+                        }));
+                                        } else if (chunk.type === 'final_answer') {
+                        const structured = chunk.payload || null;
+                        const resolvedFinal = String(structured?.answer || '').trim();
+                        finalAnswerRef.current = resolvedFinal;
+                        setMessages(prev => prev.map(msg => {
+                            if (msg.id !== streamingMessageIdRef.current) return msg;
+                            const canHydrateFromFinal = Boolean(resolvedFinal) && !_hasLiveMessageText(msg);
+                            const fallbackContent = canHydrateFromFinal
+                              ? sanitizeCasualReply(resolvedFinal)
+                              : ((msg.content || '').trim() ? msg.content : (finalAnswerRef.current ? sanitizeCasualReply(finalAnswerRef.current) : msg.content));
+                            return {
+                                ...msg,
+                                executionLog: appendExecutionLog(msg.executionLog || [], { agent_state: 'final_answer' }),
+                                schema_version: structured?.schema_version || msg.schema_version,
+                                answer: structured?.answer || msg.answer,
+                                key_points: Array.isArray(structured?.key_points) ? structured.key_points : (msg.key_points || []),
+                                sources: Array.isArray(structured?.sources) ? structured.sources : (msg.sources || []),
+                                confidence: typeof structured?.confidence === 'number' ? structured.confidence : msg.confidence,
+                                confidence_level: structured?.confidence_level || msg.confidence_level,
+                                answer_type: structured?.answer_type || msg.answer_type,
+                                metadata: structured?.metadata || msg.metadata,
+                                blocks: Array.isArray(structured?.blocks) ? structured.blocks : (msg.blocks || []),
+                                structured_response: structured,
+                                content: fallbackContent,
+                            };
                         }));
                     }
                 }
@@ -678,12 +1123,15 @@ useEffect(() => {
                 console.error('Error sending message via WS/SSE:', error);
                 if (error?.message?.includes('GOVERNANCE_BLOCK')) {
                     finalizeStream();
+                } else if (error?.message?.toLowerCase?.().includes('task cancelled')) {
+                    // User-initiated stop should not surface as a hard chat failure.
+                    finalizeStream();
                 } else {
                     failStream(error?.message || 'Failed to send message.');
                 }
             }
         }
-    }, [userId, currentSessionId, chatMode, userUniqueId, setMessages, setBotTyping, setCurrentMessageId, setIsDeepSearchActive, activePersonality, userProfile, setWsConnected, finalizeStream, failStream, isPdfMakerRequest, resolvePdfContent, safePdfFilename, messagesRef]);
+    }, [userId, currentSessionId, chatMode, userUniqueId, setMessages, setBotTyping, setCurrentMessageId, setIsDeepSearchActive, activePersonality, userProfile, setWsConnected, finalizeStream, failStream, isPdfMakerRequest, resolvePdfContent, safePdfFilename, messagesRef, sanitizeCasualReply, appendExecutionLog, _hasLiveMessageText]);
 
     const handleDownloadPDF = async (msgs) => {
         if (!msgs?.length) return alert('No chat to download!');
@@ -713,6 +1161,11 @@ useEffect(() => {
 
     return { handleSend, handleStop, handleReconnect, handleFileUpload, handleFileUploadComplete, handleDownloadPDF, handleShare, handleCopyLink };
 }
+
+
+
+
+
 
 
 

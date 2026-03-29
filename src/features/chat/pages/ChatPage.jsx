@@ -1,20 +1,21 @@
 import React, { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { Helmet } from 'react-helmet-async';
-import ReactDOM from 'react-dom';
 import ChatHistory from '../components/ChatHistory.jsx';
 import ChatWindow from '../components/ChatWindow.jsx';
 import ChatWindowHeader from '../components/ChatWindowHeader.jsx';
 import { useAuth } from '../../../context/AuthContext.jsx';
-import { LoadingSpinner } from '../../../components/loading';
-import { generateChatPDF } from '../../../utils/pdfGenerator.js';
-import { useParams, useNavigate, useLocation } from 'react-router-dom';
+import { useParams, useNavigate } from 'react-router-dom';
 import { db } from '../../../utils/firebaseConfig.js';
 import { collection, query, orderBy, onSnapshot, doc, setDoc, addDoc, serverTimestamp } from 'firebase/firestore';
 import ChatService from '../../../services/chatService';
+import { normalizeChatModeSelection } from '../utils/chatMode.js';
+
 
 const ChatSkeleton = () => (
-  <div className="flex h-full w-full bg-[#0a0d14] items-center justify-center">
-    <div className="text-[10px] uppercase font-mono tracking-widest text-zinc-600 animate-pulse">Initializing Interface...</div>
+  <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#0a0d14]">
+    <div className="text-[10px] uppercase font-mono tracking-widest text-zinc-600 animate-pulse">
+      Initializing Interface...
+    </div>
   </div>
 );
 
@@ -26,16 +27,18 @@ function AppContent() {
   const [chatSessions, setChatSessions] = useState([]);
   const [currentSessionId, setCurrentSessionId] = useState(null);
   const [loadingChats, setLoadingChats] = useState(true);
+  const [bootstrapDeadlineReached, setBootstrapDeadlineReached] = useState(false);
   const [showSidebar, setShowSidebar] = useState(false);
   const [sidebarExpanded, setSidebarExpanded] = useState(true);
   const [shareLoading, setShareLoading] = useState(false);
   const [pendingMessage, setPendingMessage] = useState(null);
   const [chatMode, setChatModeRaw] = useState(() => {
-    try { return localStorage.getItem('relyce_chat_mode') || 'normal'; } catch { return 'normal'; }
+    try { return normalizeChatModeSelection(localStorage.getItem('relyce_chat_mode')); } catch { return 'auto'; }
   });
   const setChatMode = useCallback((mode) => {
-    setChatModeRaw(mode);
-    try { localStorage.setItem('relyce_chat_mode', mode); } catch {}
+    const normalized = normalizeChatModeSelection(mode);
+    setChatModeRaw(normalized);
+    try { localStorage.setItem('relyce_chat_mode', normalized); } catch {}
   }, []);
   const [personalities, setPersonalities] = useState([]);
   const [activePersonality, setActivePersonality] = useState(null);
@@ -43,6 +46,7 @@ function AppContent() {
   const isNavigatingRef = useRef(false);
   const lastUrlSessionRef = useRef(chatId);
   const userSelectedPersonalityRef = useRef(false);
+  const emptySessionCreateInFlightRef = useRef(false);
 
   useEffect(() => {
     const uid = userProfile?.uniqueUserId;
@@ -80,7 +84,7 @@ function AppContent() {
       }
   }, [currentSessionId, user]);
 
-  // Sync personality from session data — but never override a recent manual selection
+  // Sync personality from session data - but never override a recent manual selection
   useEffect(() => {
     if (!currentSessionId || !chatSessions.length || !personalities.length) return;
     // Skip if user manually selected a personality within the last 3 seconds
@@ -113,9 +117,16 @@ function AppContent() {
     return () => window.removeEventListener('closeSidebar', handleCloseSidebar);
   }, []);
 
+  // Fail-open bootstrap: never block first paint for slow Firestore/session fetch.
+  useEffect(() => {
+    const timer = setTimeout(() => setBootstrapDeadlineReached(true), 900);
+    return () => clearTimeout(timer);
+  }, []);
+
   const handleDownloadPDF = async () => {
     if (!messages || messages.length === 0) return;
     try {
+      const { generateChatPDF } = await import('../../../utils/pdfGenerator.js');
       const blob = await generateChatPDF(messages, { title: 'Chat Conversation', date: new Date(), participants: ['User', 'Relyce AI'] });
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
@@ -159,11 +170,11 @@ function AppContent() {
     if (!currentSessionId || !user || messages.length === 0) return;
     setShareLoading(true);
     try {
-      const shareId = crypto.randomUUID().slice(0, 8);
+      const shareId = crypto.randomUUID();
       const currentSession = chatSessions.find(s => s.id === currentSessionId);
       const sessionName = currentSession?.name || 'Chat Conversation';
       await addDoc(collection(db, 'sharedChats'), {
-        shareId: shareId, originalSessionId: currentSessionId, ownerId: user.uid, title: sessionName,
+        shareId: shareId, title: sessionName,
         messages: messages.map(msg => ({ role: msg.role, content: msg.content, timestamp: msg.timestamp || msg.createdAt })),
         isPublic: true, sharedAt: serverTimestamp(), messageCount: messages.length
       });
@@ -197,13 +208,33 @@ function AppContent() {
           const sessions = snapshot.docs.map((doc) => ({ id: doc.id, ...doc.data() }));
           setChatSessions(sessions);
           if (snapshot.metadata.hasPendingWrites) return;
+
+          const lockNavigation = () => {
+            isNavigatingRef.current = true;
+            setTimeout(() => {
+              isNavigatingRef.current = false;
+            }, 450);
+          };
+
           if (chatId && chatId !== currentSessionId && !isNavigatingRef.current) {
-            if (sessions.find((s) => s.id === chatId)) setCurrentSessionId(chatId);
-            else if (sessions.length > 0) { setCurrentSessionId(sessions[0].id); navigate(`/chat/${sessions[0].id}`, { replace: true }); }
-          } else if (!chatId && sessions.length > 0 && !currentSessionId) {
-            setCurrentSessionId(sessions[0].id); navigate(`/chat/${sessions[0].id}`, { replace: true });
-          } else if (!chatId && sessions.length === 0) {
-            createNewSession();
+            if (sessions.find((s) => s.id === chatId)) {
+              setCurrentSessionId(chatId);
+            } else if (sessions.length > 0) {
+              const fallbackId = sessions[0].id;
+              setCurrentSessionId(fallbackId);
+              lockNavigation();
+              navigate(`/chat/${fallbackId}`, { replace: true });
+            }
+          } else if (!chatId && sessions.length > 0 && !currentSessionId && !isNavigatingRef.current) {
+            const nextId = sessions[0].id;
+            setCurrentSessionId(nextId);
+            lockNavigation();
+            navigate(`/chat/${nextId}`, { replace: true });
+          } else if (!chatId && sessions.length === 0 && !emptySessionCreateInFlightRef.current) {
+            emptySessionCreateInFlightRef.current = true;
+            createNewSession().finally(() => {
+              emptySessionCreateInFlightRef.current = false;
+            });
           }
           setLoadingChats(false);
         }, (error) => { console.error(error); setLoadingChats(false); }
@@ -212,7 +243,7 @@ function AppContent() {
     } else {
       setChatSessions([]); setCurrentSessionId(null); setLoadingChats(false);
     }
-  }, [user, createNewSession, chatId, navigate]);
+  }, [user, createNewSession, chatId, currentSessionId, navigate]);
 
   const handleMessagesUpdate = useCallback((newMessages) => setMessages(newMessages), []);
 
@@ -236,31 +267,20 @@ function AppContent() {
     return () => window.removeEventListener('relyce-start-chat', handler);
   }, [user, navigate]);
 
-  if (loadingChats) return <ChatSkeleton />;
+  if (loadingChats && !bootstrapDeadlineReached && !chatId && !currentSessionId) return <ChatSkeleton />;
 
   return (
-    <div className="flex h-screen w-full font-sans overflow-hidden bg-[#0a0d14] text-white">
+    <div className="h-screen w-full bg-[#0b0c10] text-white p-2 md:p-3">
       <Helmet><title>Interface | Relyce</title><meta name="robots" content="noindex" /></Helmet>
-      
-      {/* ── Minimalist Premium Background ───────────────────────── */}
 
-      {/* Persistent subtle noise texture */}
-      <div className="fixed inset-0 pointer-events-none opacity-[0.02] mix-blend-overlay z-0" 
-           style={{ backgroundImage: `url("data:image/svg+xml,%3Csvg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E")` }}>
-      </div>
-
-      {/* Abstract Blur Orbs - drastically toned down */}
-      <div className="fixed -top-[10%] -right-[10%] w-[50vw] h-[50vw] bg-emerald-500/[0.02] rounded-full blur-[120px] mix-blend-screen pointer-events-none z-0" />
-      <div className="fixed top-[60%] -left-[10%] w-[40vw] h-[40vw] bg-zinc-500/[0.02] rounded-full blur-[120px] mix-blend-screen pointer-events-none z-0" />
-
-      <div className="flex h-full w-full relative z-10">
+      <div className="flex h-full w-full relative rounded-[20px] border border-white/10 bg-[#13151b] overflow-hidden shadow-[0_24px_80px_rgba(0,0,0,0.45)]">
         <ChatHistory
           chatSessions={memoizedChatSessions} currentSessionId={currentSessionId} setCurrentSessionId={handleSetCurrentSession}
           createNewSession={createNewSession} onToggleSidebar={handleToggleSidebarExpanded}
           className={`z-40 flex-shrink-0 ${showSidebar ? 'fixed inset-y-0 left-0 w-3/5 max-w-xs md:relative md:w-auto' : 'hidden md:block'}`}
         />
 
-        <main className="flex-1 flex flex-col overflow-hidden relative min-w-0 w-full">
+        <main className="flex-1 flex flex-col overflow-hidden relative min-w-0 w-full bg-gradient-to-b from-[#15171d] to-[#111318]">
           <ChatWindowHeader 
              onToggleSidebar={() => { if (window.innerWidth < 768) setShowSidebar(true); else setSidebarExpanded(!sidebarExpanded); }}
              sidebarExpanded={sidebarExpanded} currentSessionId={currentSessionId} userId={user?.uid} userUniqueId={userProfile?.uniqueUserId}
@@ -268,14 +288,12 @@ function AppContent() {
              onCopyLink={async () => { if (!currentSessionId) return; await navigator.clipboard.writeText(`${window.location.origin}/chat/${currentSessionId}`); }}
              onDelete={() => { console.log("Delete clicked"); }} personalities={personalities} activePersonality={activePersonality} setActivePersonality={handleSetActivePersonality} setPersonalities={setPersonalities}
           />
-          {!loadingChats && (
-            <ChatWindow
-              currentSessionId={currentSessionId} userId={user?.uid} chatSessions={memoizedChatSessions} sidebarExpanded={sidebarExpanded}
-              onToggleSidebar={() => { if (window.innerWidth < 768) setShowSidebar(true); else setSidebarExpanded(!sidebarExpanded); }}
-              onMessagesUpdate={handleMessagesUpdate} chatMode={chatMode} onChatModeChange={setChatMode} activePersonality={activePersonality} setActivePersonality={handleSetActivePersonality} personalities={personalities} showHeader={false}
-              initialMessage={pendingMessage} onInitialMessageConsumed={() => setPendingMessage(null)}
-            />
-          )}
+          <ChatWindow
+            currentSessionId={currentSessionId} userId={user?.uid} chatSessions={memoizedChatSessions} sidebarExpanded={sidebarExpanded}
+            onToggleSidebar={() => { if (window.innerWidth < 768) setShowSidebar(true); else setSidebarExpanded(!sidebarExpanded); }}
+            onMessagesUpdate={handleMessagesUpdate} chatMode={chatMode} onChatModeChange={setChatMode} activePersonality={activePersonality} setActivePersonality={handleSetActivePersonality} personalities={personalities} showHeader={false}
+            initialMessage={pendingMessage} onInitialMessageConsumed={() => setPendingMessage(null)}
+          />
         </main>
 
         {showSidebar && <div className="md:hidden fixed inset-0 bg-black/80 backdrop-blur-sm z-30" onClick={() => setShowSidebar(false)} />}
@@ -285,3 +303,4 @@ function AppContent() {
 }
 
 export default AppContent;
+

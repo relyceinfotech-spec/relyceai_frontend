@@ -1,255 +1,363 @@
-import React, { useState } from 'react';
-import { ChevronDown, ChevronUp, Activity, CheckCircle2, CircleDashed, AlertCircle, BrainCircuit, Sparkles } from 'lucide-react';
-import { motion, AnimatePresence } from 'framer-motion';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
+import React, { memo, useMemo, useState, useEffect } from 'react';
+import {
+  Atom,
+  ChevronDown,
+  ChevronUp,
+  Search,
+  FileText,
+  CheckCircle2,
+  Loader2,
+  AlertTriangle,
+} from 'lucide-react';
 
-const MarkdownComponents = {
-  h3: ({ node, ...props }) => <h3 className="text-[11px] font-medium tracking-wider mb-2 text-zinc-300 uppercase" {...props} />,
-  p: ({ node, ...props }) => <p className="mb-3 last:mb-0" {...props} />,
-  ul: ({ node, ...props }) => <ul className="list-disc ml-4 mb-3 space-y-1" {...props} />,
-  li: ({ node, ...props }) => <li className="marker:text-zinc-600" {...props} />,
+const NOISE_TOKENS = [
+  'queued for execution',
+  'request is waiting in queue',
+  'queued',
+  'running on heavy lane',
+  'running on fast lane',
+  'using deeper reasoning and tool workflow',
+  'using low-latency path for quick reply',
+  'agent started',
+  'execution has started',
+  'task started',
+  'beginning the task workflow',
+  'classified request as',
+  'checking recent query cache and retrieval memory',
+  'plan ready',
+  'understanding your request',
+  'understanding request',
+  'analyzing request',
+  'analyzing intent and constraints',
+  'breaking down the request into actionable steps',
+  'selected execution route',
+  'executing plan nodes and tool steps',
+  'updated findings from latest step',
+  'verifying evidence',
+  'verification complete',
+  'updated confidence estimate',
+  'running quality check',
+  'repairing strategy after review',
+  'need more evidence - continuing research',
+  'reusing trusted memory evidence',
+  'loaded relevant facts from prior verified runs',
+  'reliability budget exhausted',
+  'finalizing best-safe answer',
+  'direct response path selected',
+  'no tools needed for this request',
+  'drafting final response',
+  'composing final answer',
+  'final answer ready',
+  'completed',
+];
+
+const normalizeText = (value) =>
+  String(value || '')
+    .replace(/\r/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+const shorten = (value, max = 260) => {
+  const clean = normalizeText(value);
+  if (!clean) return '';
+  if (clean.length <= max) return clean;
+  return `${clean.slice(0, Math.max(0, max - 3))}...`;
 };
 
-const StateBadge = ({ type, children }) => {
-  let colorClass = "border-white/10 text-zinc-400 bg-white/5";
-  if (type === "green") colorClass = "border-emerald-500/30 text-emerald-400 bg-emerald-500/10";
-  if (type === "yellow") colorClass = "border-amber-500/30 text-amber-400 bg-amber-500/10";
-  if (type === "orange") colorClass = "border-orange-500/30 text-orange-400 bg-orange-500/10";
-  
-  return (
-    <span className={`inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono tracking-widest uppercase border ${colorClass}`}>
-      {children}
-    </span>
-  );
+const isNoise = (text) => {
+  const lower = normalizeText(text).toLowerCase();
+  if (!lower) return true;
+  return NOISE_TOKENS.some((token) => lower.includes(token));
 };
 
-// Simplified timeline status mapping based on logs
-const ExecutionStepper = ({ logs }) => {
-  if (!logs || logs.length === 0) return null;
-
-  return (
-    <div className="mt-4 px-1 py-1">
-      <div className="relative pl-8 space-y-6">
-        {/* Continuous vertical line */}
-        <div className="absolute left-[14px] top-2 bottom-2 w-px bg-gradient-to-b from-cyan-500/50 via-white/10 to-zinc-800/20" />
-        
-        {logs.map((log, i) => {
-          const lowerLog = log.toLowerCase();
-          const isFinalizing = lowerLog.includes("completed") || lowerLog.includes("finalizing");
-          const isError = lowerLog.includes("failed") || lowerLog.includes("error");
-          const isTool = lowerLog.includes("[using_tool]") || lowerLog.includes("tool");
-          const isPlanning = lowerLog.includes("[planning]") || lowerLog.includes("plan");
-          const isRunning = i === logs.length - 1 && !isFinalizing && !isError;
-          
-          // Clean the log text for display
-          let cleanText = log.replace(/^\[(.*?)\]\s*/, '').trim();
-          if (isTool && !cleanText) {
-            cleanText = 'Invoking internal tool...';
-          }
-
-          return (
-            <motion.div 
-              key={i}
-              initial={{ opacity: 0, x: -10 }}
-              animate={{ opacity: 1, x: 0 }}
-              className="relative flex flex-col gap-1"
-            >
-              {/* Stepper Dot */}
-              <div className="absolute -left-[25px] top-1 w-[18px] h-[18px] rounded-full bg-[#0a0d14] border border-white/10 flex items-center justify-center z-10 transition-shadow duration-500">
-                {isFinalizing ? (
-                  <CheckCircle2 size={12} className="text-emerald-400" />
-                ) : isError ? (
-                  <AlertCircle size={12} className="text-orange-500" />
-                ) : isRunning ? (
-                  <div className="relative flex items-center justify-center">
-                    <motion.div 
-                       animate={{ scale: [1, 1.5, 1], opacity: [0.3, 0.7, 0.3] }}
-                       transition={{ repeat: Infinity, duration: 2 }}
-                       className="absolute w-4 h-4 rounded-full bg-cyan-500/20"
-                    />
-                    <Activity size={10} className="text-cyan-400" />
-                  </div>
-                ) : isTool ? (
-                  <CircleDashed size={10} className="text-indigo-400 animate-spin-slow" />
-                ) : (
-                  <div className="w-1.5 h-1.5 rounded-full bg-zinc-600" />
-                )}
-              </div>
-
-              {/* Step Header */}
-              <div className="flex items-center gap-3">
-                <span className={`text-[10px] font-mono tracking-widest uppercase ${
-                  isFinalizing ? 'text-emerald-400/70' : 
-                  isError ? 'text-orange-400/70' : 
-                  isRunning ? 'text-cyan-400' : 'text-zinc-500'
-                }`}>
-                  {isPlanning ? "Planning" : isTool ? "Action" : isFinalizing ? "Success" : "Reasoning"}
-                </span>
-                {isRunning && (
-                  <span className="flex gap-1 items-center">
-                    <span className="w-1 h-1 rounded-full bg-cyan-400 animate-pulse" />
-                    <span className="w-1 h-1 rounded-full bg-cyan-400 animate-pulse [animation-delay:200ms]" />
-                    <span className="w-1 h-1 rounded-full bg-cyan-400 animate-pulse [animation-delay:400ms]" />
-                  </span>
-                )}
-              </div>
-
-              {/* Step Content */}
-              <div className={`text-[13px] tracking-tight leading-relaxed ${
-                isFinalizing ? 'text-zinc-400' : 
-                isError ? 'text-orange-200/80' : 
-                isRunning ? 'text-white font-normal' : 'text-zinc-500'
-              }`}>
-                {isTool ? (
-                  <span className="inline-flex items-center gap-2 bg-indigo-500/5 border border-indigo-500/20 px-2 py-0.5 rounded text-indigo-300 font-mono text-[11px] shadow-sm">
-                    {cleanText}
-                  </span>
-                ) : cleanText}
-              </div>
-            </motion.div>
-          );
-        })}
-      </div>
-    </div>
-  );
+const isHttpUrl = (value) => /^https?:\/\//i.test(String(value || '').trim());
+const looksLikeDirectReply = (line) => {
+  const text = normalizeText(line).toLowerCase();
+  if (!text) return false;
+  if (text.includes('how about you')) return true;
+  if (/^(hey|hello|hi)\b/.test(text)) return true;
+  if (/^i('?| a)m\s+(doing|good|great|fine|ready)\b/.test(text)) return true;
+  return false;
 };
 
-const AgentMetaBlock = ({ meta, logs, thinkingContent, thinkingDurationMs, isStreaming }) => {
-  const [isProcessOpen, setIsProcessOpen] = useState(false);
-  
-  if (!meta?.agent_state && (!logs || logs.length === 0) && !thinkingContent) return null;
-
-  // Find latest topic for compact header
-  const latestLog = logs && logs.length > 0 ? logs[logs.length - 1] : "Thinking...";
-  const compactTitle = latestLog.replace(/^\[(.*?)\]\s*/, '').trim() || "Interpreting Request";
-
-  const strategy = meta?.strategy_mode || "DEFAULT_MODE";
-  const confidence = meta?.confidence_metrics?.confidence || meta?.confidence || 0.95;
-  const isHybrid = strategy !== "DEFAULT_MODE" && strategy !== undefined;
-
-  let confidenceBadge = null;
-  if (meta?.confidence_metrics) {
-      const metrics = meta.confidence_metrics;
-      if (metrics.forced_finalize || metrics.loop_break || metrics.tool_failures > 1) {
-          confidenceBadge = <StateBadge type="orange">🔴 Limited Confidence</StateBadge>;
-      } else if (metrics.tool_failures === 1) {
-          confidenceBadge = <StateBadge type="yellow">🟡 Partial Confidence</StateBadge>;
-      } else {
-          confidenceBadge = <StateBadge type="green">🟢 Reliable</StateBadge>;
-      }
+const normalizeLogEntry = (entry, index) => {
+  if (!entry) return null;
+  if (typeof entry === 'string') {
+    const title = shorten(entry, 220);
+    if (!title) return null;
+    return {
+      id: `log-${index}-${title.toLowerCase()}`,
+      title,
+      detail: '',
+      kind: 'reasoning',
+      status: 'running',
+    };
   }
 
+  const title = shorten(entry.title || entry.text || entry.message || '', 220);
+  const detail = shorten(entry.detail || '', 320);
+  if (!title) return null;
+
+  return {
+    id: `log-${index}-${String(entry.dedupeKey || title).toLowerCase()}`,
+    title,
+    detail,
+    kind: String(entry.kind || '').toLowerCase(),
+    status: String(entry.status || '').toLowerCase(),
+    state: String(entry.state || '').toLowerCase(),
+    resultCount: Number.isFinite(Number(entry.resultCount)) ? Number(entry.resultCount) : 0,
+    resultItems: Array.isArray(entry.resultItems)
+      ? entry.resultItems
+          .map((item) => {
+            if (!item || typeof item !== 'object') return null;
+            const chipTitle = shorten(item.title || item.name || item.snippet || item.url || item.link || '', 70);
+            const chipUrl = String(item.url || item.link || '').trim();
+            if (!chipTitle) return null;
+            return { title: chipTitle, url: chipUrl };
+          })
+          .filter(Boolean)
+      : [],
+    readTitle: shorten(entry.readTitle || '', 120),
+    readUrl: String(entry.readUrl || '').trim(),
+    resultHint: shorten(entry.resultHint || '', 200),
+  };
+};
+
+const isActionEntry = (entry) => {
+  const titleLower = entry.title.toLowerCase();
+  if (entry.kind === 'search' || entry.kind === 'read') return true;
+  return /^(searching|searched|reading|read)\b/.test(titleLower);
+};
+
+const buildNarrativeFromThinking = (thinkingContent) => {
+  const cleaned = String(thinkingContent || '')
+    .replace(/```[\s\S]*?```/g, ' ')
+    .replace(/^#+\s*/gm, '')
+    .replace(/^\s*[-*]\s+/gm, '')
+    .replace(/^\s*\[THINKING\]\s*$/gim, '')
+    .replace(/^\s*\[\/THINKING\]\s*$/gim, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  if (!cleaned) return [];
+
+  const rawBlocks = cleaned
+    .split(/\n{2,}/)
+    .map((line) => shorten(line, 280))
+    .filter(Boolean);
+
+  const normalized = rawBlocks
+    .map((line) => line.replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .filter((line) => !isNoise(line))
+    .filter((line) => !looksLikeDirectReply(line))
+    .filter((line) => !/^tool_call\s*:/i.test(line))
+    .filter((line) => !/^tool_result\s*:/i.test(line))
+    .filter((line) => !/^status\s*:/i.test(line))
+    .filter((line) => !/^source\s*:/i.test(line));
+
+  const unique = [];
+  const seen = new Set();
+  for (const paragraph of normalized) {
+    const key = paragraph.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(paragraph);
+    if (unique.length >= 3) break;
+  }
+  return unique;
+};
+
+const buildNarrativeFromLogs = ({ logs }) => {
+  const candidates = (logs || [])
+    .filter((entry) => !isActionEntry(entry))
+    .map((entry) => {
+      const merged = entry.detail ? `${entry.title}. ${entry.detail}` : entry.title;
+      return shorten(merged, 280);
+    })
+    .filter(Boolean)
+    .filter((line) => !isNoise(line))
+    .filter((line) => !looksLikeDirectReply(line));
+
+  const unique = [];
+  const seen = new Set();
+  for (const line of candidates) {
+    const key = normalizeText(line).toLowerCase();
+    if (!key || seen.has(key)) continue;
+    seen.add(key);
+    unique.push(line);
+    if (unique.length >= 3) break;
+  }
+  return unique;
+};
+
+const AgentMetaBlock = ({ logs, thinkingContent, isStreaming }) => {
+  const [expanded, setExpanded] = useState(true);
+
+  useEffect(() => {
+    if (isStreaming) setExpanded(true);
+  }, [isStreaming]);
+
+  const normalizedLogs = useMemo(
+    () => (Array.isArray(logs) ? logs.map(normalizeLogEntry).filter(Boolean) : []),
+    [logs]
+  );
+
+  const actionRows = useMemo(() => {
+    const rows = normalizedLogs.filter((item) => {
+      if (!isActionEntry(item)) return false;
+      if (isNoise(`${item.title} ${item.detail}`)) return false;
+      return true;
+    });
+    const deduped = [];
+    const seen = new Set();
+    for (const row of rows) {
+      const key = `${row.title}|${row.detail}|${row.status}`.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      deduped.push(row);
+    }
+    return deduped.slice(-8);
+  }, [normalizedLogs]);
+
+  const reasoningParagraphs = useMemo(() => {
+    const fromThinking = buildNarrativeFromThinking(thinkingContent);
+    if (fromThinking.length > 0) return fromThinking;
+    return buildNarrativeFromLogs({ logs: normalizedLogs });
+  }, [thinkingContent, normalizedLogs]);
+
+  const headingMeta = useMemo(() => {
+    if (isStreaming) {
+      const activeAction = [...actionRows].reverse().find((row) => {
+        const status = String(row?.status || '').toLowerCase();
+        return status === 'running' || status === 'pending' || !status;
+      });
+      if (activeAction?.kind === 'search') {
+        return { label: 'Searching the web', Icon: Atom };
+      }
+      if (activeAction?.kind === 'read') {
+        return { label: 'Reading sources', Icon: Atom };
+      }
+      return { label: 'Thinking', Icon: Atom };
+    }
+    return { label: 'Thoughts', Icon: Atom };
+  }, [actionRows, isStreaming]);
+
+  const showPlaceholder = isStreaming && reasoningParagraphs.length === 0 && actionRows.length === 0;
+  if (!showPlaceholder && reasoningParagraphs.length === 0 && actionRows.length === 0) return null;
+
   return (
-    <div className="mb-4 group/thinking relative z-30">
-        {/* Compact Top-Level Toggle */}
-        <button 
-          onClick={() => setIsProcessOpen(!isProcessOpen)}
-          className="flex items-center gap-2 px-1 py-1 hover:bg-white/5 rounded-lg transition-all group/btn"
-        >
-          <div className="flex items-center gap-3">
-             <div className="relative">
-                <Sparkles size={14} className="text-blue-400 group-hover/btn:text-blue-300 transition-colors" />
-                {isStreaming && (
-                   <motion.div 
-                    animate={{ scale: [1, 1.4, 1], opacity: [0.3, 0.6, 0.3] }}
-                    transition={{ repeat: Infinity, duration: 2 }}
-                    className="absolute inset-0 bg-blue-400/30 blur-sm rounded-full"
-                   />
-                )}
-             </div>
-             <span className="text-[14px] font-medium text-zinc-300 group-hover/btn:text-white transition-colors">
-               {compactTitle}
-             </span>
-             {!isStreaming && thinkingDurationMs > 0 && (
-               <span className="text-[11px] text-zinc-500 font-light ml-2 italic">
-                 Thought for {(thinkingDurationMs / 1000).toFixed(1)}s
-               </span>
-             )}
-          </div>
-          <motion.div
-            animate={{ rotate: isProcessOpen ? 180 : 0 }}
-            className="text-zinc-500 group-hover/btn:text-white transition-colors ml-1"
-          >
-            <ChevronDown size={14} />
-          </motion.div>
-        </button>
+    <div className="mb-4">
+      <button
+        type="button"
+        onClick={() => setExpanded((prev) => !prev)}
+        className="inline-flex items-center gap-2.5 text-zinc-100 hover:text-white transition-colors"
+      >
+        <span className="inline-flex h-6 w-6 items-center justify-center rounded-full border border-zinc-600/80 bg-zinc-900/90">
+          <headingMeta.Icon size={13} className="text-zinc-200" />
+        </span>
+        <span className="text-[15px] sm:text-[16px] leading-none font-semibold tracking-tight">{headingMeta.label}</span>
+        {isStreaming && <Loader2 size={13} className="animate-spin text-zinc-400" />}
+        {expanded ? <ChevronUp size={16} className="text-zinc-400" /> : <ChevronDown size={16} className="text-zinc-400" />}
+      </button>
 
-        <AnimatePresence>
-          {isProcessOpen && (
-            <motion.div
-              initial={{ height: 0, opacity: 0, y: -10 }}
-              animate={{ height: "auto", opacity: 1, y: 0 }}
-              exit={{ height: 0, opacity: 0, y: -10 }}
-              className="overflow-hidden mt-3"
-            >
-              <div className="p-6 border border-white/10 bg-[#0a0d14]/90 backdrop-blur-2xl rounded-2xl shadow-2xl relative">
-                {/* Internal Card Header */}
-                <div className="flex items-center justify-between mb-6">
-                  <div className="flex items-center gap-2">
-                    <BrainCircuit size={16} className="text-emerald-400" />
-                    <span className="text-[12px] font-mono tracking-widest uppercase text-zinc-400">
-                      Cognitive Engine Details
-                    </span>
-                  </div>
-                  {confidenceBadge}
-                </div>
-
-                <div className="space-y-8">
-                    {/* Execution Timeline Integration */}
-                    <div className="space-y-3">
-                      <div className="flex items-center justify-between px-1">
-                         <span className="text-[10px] font-mono tracking-[0.2em] text-zinc-500 uppercase">Process Execution</span>
-                         <span className="text-[10px] font-mono text-zinc-600 tracking-wider font-light italic">{logs.length} operations</span>
-                      </div>
-                      <ExecutionStepper logs={logs} />
-                    </div>
-
-                    {/* Strategic Roadmap (Plan) */}
-                    {meta?.plan && Array.isArray(meta.plan) && meta.plan.length > 0 && (
-                      <div className="pt-6 border-t border-white/5">
-                        <div className="flex items-center justify-between mb-4 px-1">
-                           <span className="text-[10px] font-mono tracking-[0.2em] text-zinc-500 uppercase">Strategic Roadmap</span>
-                        </div>
-                        <div className="grid grid-cols-1 gap-3">
-                          {meta.plan.map((step, idx) => (
-                            <div key={idx} className="flex gap-4 group/step">
-                              <div className="flex-shrink-0 w-6 h-6 rounded-lg bg-white/5 border border-white/5 flex items-center justify-center text-[10px] font-mono text-emerald-400/40 group-hover/step:text-emerald-400 transition-colors">
-                                {idx + 1}
-                              </div>
-                              <span className="text-[13px] text-zinc-400 font-light leading-snug group-hover/step:text-zinc-200 transition-colors">
-                                {step}
-                              </span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    )}
-
-                    {/* Cognitive Insight (Thinking Process) */}
-                    {thinkingContent && thinkingContent.trim().length > 0 && (
-                      <div className="pt-6 border-t border-white/5">
-                         <div className="flex items-center justify-between mb-4 px-1">
-                           <span className="text-[10px] font-mono tracking-[0.2em] text-zinc-500 uppercase">Cognitive Insight</span>
-                        </div>
-                        <div className="prose prose-sm prose-invert max-w-none text-zinc-500 font-light text-[12px] leading-relaxed">
-                           <ReactMarkdown components={MarkdownComponents} remarkPlugins={[remarkGfm]}>
-                             {thinkingContent}
-                           </ReactMarkdown>
-                        </div>
-                      </div>
-                    )}
-                </div>
-              </div>
-            </motion.div>
+      {expanded && (
+        <div className="mt-3 space-y-3">
+          {showPlaceholder && (
+            <div className="border-l-2 border-white/55 pl-3.5 text-[14px] leading-6 text-zinc-300">
+              Gathering reasoning updates...
+            </div>
           )}
-        </AnimatePresence>
+          {reasoningParagraphs.length > 0 && (
+            <div className="border-l-2 border-white/60 pl-3.5 text-[14px] leading-[1.62] text-zinc-200 font-medium max-w-4xl">
+              {reasoningParagraphs.map((paragraph, idx) => (
+                <p key={`reasoning-${idx}`} className={idx === 0 ? '' : 'mt-2'}>
+                  {paragraph}
+                </p>
+              ))}
+            </div>
+          )}
+
+          {actionRows.length > 0 && (
+            <div className="space-y-2">
+              {actionRows.map((row) => {
+                const done = row.status === 'done' || row.status === 'success' || row.status === 'ok' || row.status === 'completed';
+                const failed = row.status === 'error' || row.status === 'failed' || row.status === 'blocked' || row.status === 'throttled';
+                const running = !done && isStreaming && (row.status === 'running' || row.status === 'pending' || !row.status);
+                const icon = row.kind === 'read'
+                  ? <FileText size={14} className="text-zinc-300 mt-0.5 shrink-0" />
+                  : <Search size={14} className="text-zinc-300 mt-0.5 shrink-0" />;
+
+                return (
+                  <div key={row.id} className="flex items-start gap-2 text-zinc-100">
+                    {icon}
+                    <div className="min-w-0">
+                      <div className="text-[14px] leading-5 font-semibold">{row.title}</div>
+                      {row.detail && (
+                        <div className="text-[13px] leading-5 text-zinc-300 font-medium">{row.detail}</div>
+                      )}
+                      {row.kind === 'search' && row.resultCount > 0 && !/^found\s+\d+\s+results?/i.test(row.detail || '') && (
+                        <div className="text-[12px] leading-4 text-zinc-400">Found {row.resultCount} results</div>
+                      )}
+                      {Array.isArray(row.resultItems) && row.resultItems.length > 0 && (
+                        <div className="mt-1.5 flex flex-wrap gap-1.5">
+                          {row.resultItems.slice(0, 3).map((item, idx) => (
+                            isHttpUrl(item.url) ? (
+                              <a
+                                key={`${row.id}-item-${idx}`}
+                                href={item.url}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex max-w-[300px] items-center rounded-full border border-zinc-700/90 bg-zinc-900/70 px-2.5 py-1 text-[11px] text-zinc-200 hover:border-zinc-500 hover:text-white"
+                                title={item.title}
+                              >
+                                <span className="truncate">{item.title}</span>
+                              </a>
+                            ) : (
+                              <span
+                                key={`${row.id}-item-${idx}`}
+                                className="inline-flex max-w-[300px] items-center rounded-full border border-zinc-700/90 bg-zinc-900/70 px-2.5 py-1 text-[11px] text-zinc-200"
+                                title={item.title}
+                              >
+                                <span className="truncate">{item.title}</span>
+                              </span>
+                            )
+                          ))}
+                          {row.resultCount > row.resultItems.slice(0, 3).length && (
+                            <span className="inline-flex items-center rounded-full border border-zinc-700/90 bg-zinc-900/70 px-2.5 py-1 text-[11px] text-zinc-300">
+                              +{row.resultCount - row.resultItems.slice(0, 3).length} more
+                            </span>
+                          )}
+                        </div>
+                      )}
+                      {done && (
+                        <div className="mt-1 inline-flex items-center gap-1.5 rounded-full border border-emerald-400/40 bg-emerald-500/10 px-2.5 py-0.5 text-[11px] text-emerald-300">
+                          <CheckCircle2 size={11} />
+                          <span>Step completed</span>
+                        </div>
+                      )}
+                      {failed && (
+                        <div className="mt-1 inline-flex items-center gap-1.5 rounded-full border border-rose-400/40 bg-rose-500/10 px-2.5 py-0.5 text-[11px] text-rose-300">
+                          <AlertTriangle size={11} />
+                          <span>Step failed</span>
+                        </div>
+                      )}
+                      {running && (
+                        <div className="mt-1 inline-flex items-center gap-1.5 text-[11px] text-zinc-400">
+                          <Loader2 size={11} className="animate-spin" />
+                          <span>Working...</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      )}
     </div>
   );
 };
 
-// Re-using MessageComponent.jsx's MarkdownComponents logic locally or importing it would be ideal.
-// For now, assuming MarkdownComponents and ReactMarkdown are available in the scope or passed.
-// Actually, I'll use a simplified list if ReactMarkdown isn't imported here.
-// But wait, AgentMetaBlock is in the same directory. I should make sure it has what it needs.
-export default AgentMetaBlock;
+export default memo(AgentMetaBlock);

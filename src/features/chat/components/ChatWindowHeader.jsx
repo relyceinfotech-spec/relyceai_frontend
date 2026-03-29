@@ -5,6 +5,7 @@ import ChatService from '../../../services/chatService';
 import { doc, updateDoc } from 'firebase/firestore';
 import { db } from '../../../utils/firebaseConfig';
 import { useAuth } from '../../../context/AuthContext';
+import { normalizeChatMode, normalizeChatModeSelection } from '../utils/chatMode.js';
 
 
 // Download component for the header
@@ -89,6 +90,8 @@ const ChatWindowHeader = ({
   // Mode Dropdown State
   const [modeDropdownOpen, setModeDropdownOpen] = useState(false);
   const modeButtonRef = useRef(null);
+  const selectedMode = normalizeChatModeSelection(chatMode);
+  const effectiveMode = normalizeChatMode(chatMode);
 
   // Personality Dropdown State
   const [personalityDropdownOpen, setPersonalityDropdownOpen] = useState(false);
@@ -199,26 +202,37 @@ const ChatWindowHeader = ({
               onClick={() => setModeDropdownOpen(!modeDropdownOpen)}
               className={`flex items-center gap-2 px-4 py-2 transition-all duration-300 text-[10px] font-mono uppercase tracking-widest border ${modeDropdownOpen ? 'bg-white/[0.05] text-white border-white/10' : 'text-zinc-400 bg-transparent border-transparent hover:bg-white/[0.02] hover:text-white hover:border-white/5'}`}
             >
-              <span>{chatMode === 'business' ? 'Business Process' : chatMode === 'agent' ? (canUseFullAgent ? 'Structured Agent' : 'Agent Trial') : 'Generic Engine'}</span>
+              <span>
+                {selectedMode === 'auto'
+                  ? 'Auto ⭐'
+                  : effectiveMode === 'research_pro'
+                  ? (canUseFullAgent ? 'Research Pro' : 'Research Pro (Trial)')
+                  : effectiveMode === 'agent'
+                    ? (canUseFullAgent ? 'Structured Agent' : 'Agent Trial')
+                    : 'Smart'}
+              </span>
               <svg className={`w-3.5 h-3.5 transition-transform duration-300 ${modeDropdownOpen ? 'rotate-180 text-white' : 'text-zinc-500'}`} fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={1.5} d="M19 9l-7 7-7-7" /></svg>
             </button>
 
             {modeDropdownOpen && (
-              <div className="absolute top-full left-0 mt-3 py-2 w-48 z-50 bg-[#0a0d14] border border-white/10 shadow-2xl overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200 mode-dropdown-content">
-                <button onClick={() => { if(onChatModeChange) onChatModeChange('normal'); setModeDropdownOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 transition-colors text-left text-[10px] font-mono uppercase tracking-widest ${chatMode === 'normal' ? 'bg-white/5 text-white' : 'hover:bg-white/5 text-zinc-400 hover:text-white'}`}>
-                  Generic Engine
+              <div className="absolute top-full left-0 mt-3 py-2 w-56 z-50 bg-[#0a0d14] border border-white/10 shadow-2xl overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200 mode-dropdown-content">
+                <button onClick={() => { if(onChatModeChange) onChatModeChange('auto'); setModeDropdownOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 transition-colors text-left text-[10px] font-mono uppercase tracking-widest ${selectedMode === 'auto' ? 'bg-white/5 text-white' : 'hover:bg-white/5 text-zinc-400 hover:text-white'}`}>
+                  Auto ⭐
                 </button>
-                <button onClick={() => { if(onChatModeChange) onChatModeChange('business'); setModeDropdownOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 transition-colors text-left text-[10px] font-mono uppercase tracking-widest border-t border-white/[0.05] ${chatMode === 'business' ? 'bg-white/5 text-white' : 'hover:bg-white/5 text-zinc-400 hover:text-white'}`}>
-                  Business Process
+                <button onClick={() => { if(onChatModeChange) onChatModeChange('smart'); setModeDropdownOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 transition-colors text-left text-[10px] font-mono uppercase tracking-widest border-t border-white/[0.05] ${selectedMode === 'smart' ? 'bg-white/5 text-white' : 'hover:bg-white/5 text-zinc-400 hover:text-white'}`}>
+                  Smart
                 </button>
-                <button onClick={() => { if(onChatModeChange) onChatModeChange('agent'); setModeDropdownOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 transition-colors text-left text-[10px] font-mono uppercase tracking-widest border-t border-white/[0.05] ${chatMode === 'agent' ? 'bg-white/5 text-white' : 'hover:bg-white/5 text-zinc-400 hover:text-white'}`}>
+                <button onClick={() => { if(onChatModeChange) onChatModeChange('agent'); setModeDropdownOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 transition-colors text-left text-[10px] font-mono uppercase tracking-widest border-t border-white/[0.05] ${selectedMode === 'agent' ? 'bg-white/5 text-white' : 'hover:bg-white/5 text-zinc-400 hover:text-white'}`}>
                   {canUseFullAgent ? 'Structured Agent' : 'Structured Agent (Trial)'}
+                </button>
+                <button onClick={() => { if(onChatModeChange) onChatModeChange('research_pro'); setModeDropdownOpen(false); }} className={`w-full flex items-center gap-3 px-4 py-3 transition-colors text-left text-[10px] font-mono uppercase tracking-widest border-t border-white/[0.05] ${selectedMode === 'research_pro' ? 'bg-white/5 text-white' : 'hover:bg-white/5 text-zinc-400 hover:text-white'}`}>
+                  {canUseFullAgent ? 'Research Pro' : 'Research Pro (Trial)'}
                 </button>
               </div>
             )}
           </div>
 
-          {chatMode === 'normal' && (
+          {(selectedMode === 'auto' || effectiveMode === 'smart') && (
             <div className="relative">
                 <button ref={personalityButtonRef} onClick={(e) => { e.stopPropagation(); setPersonalityDropdownOpen(!personalityDropdownOpen); }} className={`flex items-center gap-2 px-4 py-2 transition-all duration-300 text-[10px] font-mono uppercase tracking-widest border ${personalityDropdownOpen ? 'bg-white/[0.05] text-white border-white/10' : 'text-zinc-400 bg-transparent border-transparent hover:bg-white/[0.02] hover:text-white hover:border-white/5'}`} disabled={!personalities || personalities.length === 0}>
                 <User size={14} className={personalityDropdownOpen ? "text-white" : "text-zinc-500"} />
@@ -277,7 +291,7 @@ const ChatWindowHeader = ({
 
                 {headerMenuOpen && (
                 <div ref={headerMenuRef} className="absolute top-full right-0 mt-3 py-2 w-72 z-50 bg-[#0a0d14] border border-white/10 shadow-2xl overflow-hidden animate-in fade-in slide-in-from-top-2 duration-200">
-                     {chatMode === 'normal' && (
+                     {(selectedMode === 'auto' || effectiveMode === 'smart') && (
                         <button onClick={() => { setHeaderMenuOpen(false); navigate('/personalities'); }} className="w-full flex items-center gap-3 px-5 py-3.5 transition-colors text-left text-[10px] font-mono tracking-widest uppercase hover:bg-white/5 text-zinc-200 hover:text-white border-b border-white/[0.05]">
                             <Users size={14} className="text-zinc-400" />
                             Persona Directory
@@ -289,32 +303,6 @@ const ChatWindowHeader = ({
                         System Preferences
                     </button>
 
-                    <div className="pt-4 pb-4 px-5">
-                      <div className="text-[10px] font-medium uppercase tracking-widest text-zinc-500 mb-3 block">
-                        Trace Visibility Log
-                      </div>
-                      <div className="flex bg-[#0a0d14] p-1 rounded-xl border border-white/[0.05]">
-                        {[
-                          { id: 'auto', label: 'Auto' },
-                          { id: 'on', label: 'Force' },
-                          { id: 'off', label: 'Hide' }
-                        ].map((option) => (
-                          <button
-                            key={option.id}
-                            onClick={() => handleThinkingVisibilityChange(option.id)}
-                            disabled={savingThinkingVisibility}
-                            className={`flex-1 py-1.5 text-xs font-medium tracking-wide transition-all rounded-lg ${
-                              thinkingVisibility === option.id
-                                ? 'bg-white/10 text-white shadow-sm'
-                                : 'bg-transparent text-zinc-500 hover:text-zinc-300 hover:bg-white/[0.02]'
-                            } ${savingThinkingVisibility ? 'opacity-50 cursor-wait' : ''}`}
-                          >
-                            {option.label}
-                          </button>
-                        ))}
-                      </div>
-                    </div>
-                    
                     <button onClick={handleShareClick} className="w-full flex items-center gap-3 px-5 py-3.5 transition-colors text-left text-xs font-medium tracking-wide hover:bg-white/5 text-zinc-300 hover:text-white border-t border-white/[0.05]" disabled={isSharing}>
                         <Share size={16} className="text-zinc-400" />
                         {isSharing ? 'Processing...' : 'Export Public Link'}

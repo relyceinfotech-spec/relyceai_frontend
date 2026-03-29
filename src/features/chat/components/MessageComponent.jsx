@@ -1,17 +1,47 @@
-﻿import React, { useState, useEffect, useRef, useMemo, memo, forwardRef } from 'react';
+import React, { useState, useEffect, useRef, useMemo, memo, forwardRef } from 'react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
-import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
-import { atomDark } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { Copy, Download, Image, FileText, Globe, ExternalLink, Search, Sparkles, BrainCircuit, ChevronDown, ChevronUp } from 'lucide-react';
 import { getFileIcon, formatFileSize } from '../../../utils/chatHelpers';
 import IntelligenceBar from './IntelligenceBar';
 import AgentMetaBlock from './AgentMetaBlock';
 import PDFService from '../../../services/pdfService';
+import { buildResponse } from '../response_pipeline/response_builder';
+import StructuredResponseRenderer from '../response_pipeline/StructuredResponseRenderer';
+import { normalizeChatMode } from '../utils/chatMode.js';
 import './MessageComponent.css';
 
 const THINKING_START = "[THINKING]";
 const THINKING_END = "[/THINKING]";
+const REMARK_PLUGINS = [remarkGfm];
+
+let _syntaxHighlighter = null;
+let _syntaxTheme = null;
+let _syntaxLoadPromise = null;
+
+const ensureSyntaxHighlighterLoaded = async () => {
+  if (_syntaxHighlighter && _syntaxTheme) {
+    return { SyntaxHighlighter: _syntaxHighlighter, syntaxTheme: _syntaxTheme };
+  }
+
+  if (!_syntaxLoadPromise) {
+    _syntaxLoadPromise = Promise.all([
+      import('react-syntax-highlighter'),
+      import('react-syntax-highlighter/dist/esm/styles/prism'),
+    ])
+      .then(([highlighterModule, styleModule]) => {
+        _syntaxHighlighter = highlighterModule.Prism;
+        _syntaxTheme = styleModule.atomDark;
+        return { SyntaxHighlighter: _syntaxHighlighter, syntaxTheme: _syntaxTheme };
+      })
+      .catch((err) => {
+        _syntaxLoadPromise = null;
+        throw err;
+      });
+  }
+
+  return _syntaxLoadPromise;
+};
 
 const parseThinkingContent = (content) => {
   if (!content) return { thinkingContent: "", displayContent: "" };
@@ -91,7 +121,7 @@ const formatThinkingForDisplay = (text) => {
     .replace(/\r\n/g, "\n")
     .replace(/\*\*(.*?)\*\*/g, "$1")
     .replace(/\*\*/g, "")
-    .replace(/[Ã¢â‚¬Â¢]/g, "*")
+    .replace(/[\u2022\u00B7]/g, "*")
     .replace(/\s*\*\s*\*\s*/g, "\n")
     .replace(/([^\n])\s*(\d+(?:\.\d+)*)(?:\.){1,}\s+/g, "$1\n$2. ")
     .replace(/\n{3,}/g, "\n\n");
@@ -131,7 +161,7 @@ const formatThinkingForDisplay = (text) => {
       if (!chunk) continue;
       let trimmed = chunk.trim();
       if (!trimmed) continue;
-      trimmed = trimmed.replace(/^\s*[*Ã¢â‚¬Â¢-]\s*/, "");
+      trimmed = trimmed.replace(/^\s*[\-*\u2022\u00B7]\s*/, "");
       trimmed = trimmed.replace(/\s{2,}/g, " ");
       const subparts = trimmed
         .split(/\s+\*\s+/)
@@ -255,20 +285,26 @@ const SourcesDisplay = ({ sources }) => (
     </div>
     <div className="flex flex-wrap gap-2">
       {sources.slice(0, 5).map((source, idx) => {
+        const href = typeof source === "string"
+          ? source
+          : (source?.url || source?.link || "");
+        const label = typeof source === "string"
+          ? source
+          : (source?.name || source?.title || href || `source-${idx}`);
         let domain = 'source';
         try {
-          domain = new URL(source.link).hostname.replace('www.', '');
+          domain = new URL(href).hostname.replace('www.', '');
         } catch {}
-        const sourceKey = source.link || source.title || `source-${idx}`;
+        const sourceKey = href || label || `source-${idx}`;
         
         return (
           <a
             key={sourceKey}
-            href={source.link}
+            href={href || undefined}
             target="_blank"
             rel="noopener noreferrer"
             className="inline-flex items-center gap-2 px-3 py-1.5 border border-white/10 text-[10px] uppercase tracking-wider font-mono text-white/60 hover:text-white hover:bg-white/5 transition-colors"
-            title={source.title}
+            title={label}
           >
             <span className="truncate max-w-[120px]">{domain}</span>
             <ExternalLink size={10} className="opacity-50" />
@@ -285,16 +321,16 @@ const ThinkingDropdown = ({ formattedContent, currentHeading, isStreaming, hasAn
   const [isOpen, setIsOpen] = useState(false);
   const [hasUserToggled, setHasUserToggled] = useState(false);
 
-  if (!formattedContent) return null;
-
-  const showLiveHeading = Boolean(isStreaming && currentHeading);
-  const showStaticHeading = Boolean(!isStreaming && currentHeading);
-
   useEffect(() => {
     if (hasAnswer && isOpen && !hasUserToggled) {
       setIsOpen(false);
     }
   }, [hasAnswer, isOpen, hasUserToggled]);
+
+  if (!formattedContent) return null;
+
+  const showLiveHeading = Boolean(isStreaming && currentHeading);
+  const showStaticHeading = Boolean(!isStreaming && currentHeading);
 
   return (
     <div className="thinking-dropdown-container">
@@ -324,7 +360,7 @@ const ThinkingDropdown = ({ formattedContent, currentHeading, isStreaming, hasAn
       {isOpen && (
         <div className="border border-white/5 bg-[#0a0d14]/50 backdrop-blur-md rounded-2xl p-5 mt-3 shadow-inner">
           <div className="prose prose-sm prose-invert max-w-none text-zinc-400 prose-p:leading-relaxed text-[13px] font-light">
-            <ReactMarkdown components={MarkdownComponents} remarkPlugins={[remarkGfm]}>
+            <ReactMarkdown components={MarkdownComponents} remarkPlugins={REMARK_PLUGINS}>
               {formattedContent}
             </ReactMarkdown>
           </div>
@@ -391,7 +427,25 @@ const getCodeFileExtension = (language) => {
 
 const CodeBlockWithCopy = ({ code, language, ...props }) => {
   const [copied, setCopied] = useState(false);
+  const [syntaxReady, setSyntaxReady] = useState(Boolean(_syntaxHighlighter && _syntaxTheme));
   const normalizedCode = String(code).replace(/\n$/, "");
+
+  useEffect(() => {
+    let active = true;
+    if (syntaxReady) return () => { active = false; };
+
+    ensureSyntaxHighlighterLoaded()
+      .then(() => {
+        if (active) setSyntaxReady(true);
+      })
+      .catch(() => {
+        if (active) setSyntaxReady(false);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [syntaxReady]);
 
   const handleCopy = async () => {
     try {
@@ -449,22 +503,28 @@ const CodeBlockWithCopy = ({ code, language, ...props }) => {
       </div>
 
       <div className="overflow-x-auto relative" style={{ scrollbarWidth: 'thin', scrollbarColor: 'rgba(255, 255, 255, 0.1) transparent' }}>
-        <SyntaxHighlighter
-          style={atomDark}
-          language={language === 'text' ? 'text' : language}
-          PreTag="div"
-          customStyle={{
-            margin: 0,
-            background: 'transparent',
-            padding: '1.25rem 1.5rem',
-            fontSize: '13px',
-            lineHeight: '1.7',
-            fontFamily: '"JetBrains Mono", source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace'
-          }}
-          {...props}
-        >
-          {normalizedCode}
-        </SyntaxHighlighter>
+        {syntaxReady && _syntaxHighlighter && _syntaxTheme ? (
+          <_syntaxHighlighter
+            style={_syntaxTheme}
+            language={language === 'text' ? 'text' : language}
+            PreTag="div"
+            customStyle={{
+              margin: 0,
+              background: 'transparent',
+              padding: '1.25rem 1.5rem',
+              fontSize: '13px',
+              lineHeight: '1.7',
+              fontFamily: '"JetBrains Mono", source-code-pro, Menlo, Monaco, Consolas, "Courier New", monospace'
+            }}
+            {...props}
+          >
+            {normalizedCode}
+          </_syntaxHighlighter>
+        ) : (
+          <pre className="m-0 p-5 text-[13px] leading-relaxed font-mono whitespace-pre overflow-x-auto text-zinc-100">
+            {normalizedCode}
+          </pre>
+        )}
       </div>
     </div>
   );
@@ -661,7 +721,47 @@ const ToolResultCard = ({ result }) => {
   );
 };
 
-const MessageComponent = memo(forwardRef(({ msg, index, theme, onCopyMessage, onContinue, onFollowupClick, continueMeta, isLastMessage, chatMode, thinkingVisibility = 'auto' }, ref) => {
+const normalizeConfidenceBand = (confidence, level) => {
+  const rawLevel = String(level || "").trim().toUpperCase();
+  if (rawLevel === "HIGH") return "HIGH";
+  if (rawLevel === "MEDIUM" || rawLevel === "MODERATE") return "MEDIUM";
+  if (rawLevel === "LOW") return "LOW";
+  if (typeof confidence === "number") {
+    if (confidence >= 0.75) return "HIGH";
+    if (confidence >= 0.45) return "MEDIUM";
+    return "LOW";
+  }
+  return "";
+};
+
+const ResponseConfidenceBadge = ({ confidence, confidenceLevel }) => {
+  const band = normalizeConfidenceBand(confidence, confidenceLevel);
+  if (!band) return null;
+  if (band === "HIGH") {
+    return (
+      <div className="mb-4 inline-flex items-center gap-2 text-[11px] text-emerald-300 border border-emerald-500/30 bg-emerald-500/10 px-3 py-1.5 rounded-full">
+        <span>🟢</span>
+        <span>High confidence</span>
+      </div>
+    );
+  }
+  if (band === "MEDIUM") {
+    return (
+      <div className="mb-4 inline-flex items-center gap-2 text-[11px] text-amber-300 border border-amber-500/30 bg-amber-500/10 px-3 py-1.5 rounded-full">
+        <span>🟡</span>
+        <span>Medium confidence</span>
+      </div>
+    );
+  }
+  return (
+    <div className="mb-4 inline-flex items-center gap-2 text-[11px] text-red-300 border border-red-500/30 bg-red-500/10 px-3 py-1.5 rounded-full">
+      <span>🔴</span>
+      <span>Low confidence — verify this</span>
+    </div>
+  );
+};
+
+const MessageComponentInner = forwardRef(({ msg, index, theme, onCopyMessage, onContinue, onFollowupClick, continueMeta, isLastMessage, chatMode, thinkingVisibility = 'auto' }, ref) => {
   const [showCopyButton, setShowCopyButton] = useState(false);
   const [copied, setCopied] = useState(false);
   const [showIndicator, setShowIndicator] = useState(false);
@@ -676,7 +776,7 @@ const MessageComponent = memo(forwardRef(({ msg, index, theme, onCopyMessage, on
   const fadeTimeoutRef = useRef(null);
   const ghostTimeoutRef = useRef(null);
 
-  const isGeneric = chatMode === 'normal' || !chatMode;
+  const isGeneric = normalizeChatMode(chatMode) === 'smart';
   const isStreaming = msg.isStreaming;
 
 
@@ -693,6 +793,62 @@ const MessageComponent = memo(forwardRef(({ msg, index, theme, onCopyMessage, on
     return cleaned;
   };
 
+
+  const stripInternalLeakage = (content) => {
+    if (!content) return content;
+    let cleaned = String(content);
+
+    const blockedLinePatterns = [
+      /^\s*_?CALL\s*:\s*.*$/gim,
+      /^\s*TOOL_CALL\s*:\s*.*$/gim,
+      /^\s*Assistant:\s*First,.*$/gim,
+      /^\s*First,\s*the user.*$/gim,
+      /^\s*AGENT OPERATIONAL LOGIC\s*:?.*$/gim,
+      /^\s*RUNTIME CONTEXT\s*:?.*$/gim,
+      /^\s*CRITICAL SYSTEM OVERRIDE\s*:?.*$/gim,
+      /^\s*Rules for FINAL ANSWER\s*:?.*$/gim,
+      /^\s*Classify\s*&\s*Plan\s*:?.*$/gim,
+      /^\s*Do NOT describe steps or reasoning\.?\s*$/gim,
+      /^\s*Do NOT narrate what you did\.?\s*$/gim,
+      /^\s*Only include sources if asked\.?\s*$/gim,
+      /^\s*Deliver one clean final response\.?\s*$/gim,
+      /^\s*You have completed all required execution steps\.?.*$/gim,
+      /^\s*(Thoughts|Progress)\s*$/gim,
+      /^\s*(Searching|Searched)\s+\"?.*\"?\s*$/gim,
+      /^\s*Step completed\s*$/gim,
+      /^\s*Sources collected\..*$/gim,
+      /^\s*Looking for relevant and recent sources.*$/gim,
+    ];
+
+    blockedLinePatterns.forEach((pattern) => {
+      cleaned = cleaned.replace(pattern, "");
+    });
+
+    // If prompt/tool leakage appears, keep only the final human-facing section.
+    const leakageHints = [
+      /AGENT OPERATIONAL LOGIC/i,
+      /CRITICAL SYSTEM OVERRIDE/i,
+      /RUNTIME CONTEXT/i,
+      /Rules for FINAL ANSWER/i,
+      /^\s*_?CALL\s*:/im,
+      /^\s*TOOL_CALL\s*:/im,
+    ];
+
+    if (leakageHints.some((rx) => rx.test(content))) {
+      const headingMatch = cleaned.match(/(?:^|\n)#{1,6}\s+.+/m);
+      if (headingMatch && typeof headingMatch.index === "number") {
+        const start = headingMatch.index + (headingMatch[0].startsWith("\n") ? 1 : 0);
+        cleaned = cleaned.slice(start);
+      }
+
+      cleaned = cleaned.replace(/^\s*Assistant\s*:[\s\S]*?(?=(?:\n#{1,6}\s+|$))/im, "");
+    }
+
+    cleaned = cleaned
+      .replace(/\n{3,}/g, "\n\n")
+      .replace(/^[\s\n]+|[\s\n]+$/g, "");
+    return cleaned;
+  };
   const handleCopy = () => {
     onCopyMessage(stripSystemMarkers(msg.content));
     setCopied(true);
@@ -701,27 +857,7 @@ const MessageComponent = memo(forwardRef(({ msg, index, theme, onCopyMessage, on
 
   const preprocessContent = (content) => {
     if (!content) return content;
-    let processed = stripContinueMarkers(content);
-
-    // Transform raw TOOL_CALL: tool_name("args") into an elegant Agent inline text
-    processed = processed.replace(
-      /TOOL_CALL:\s*([a-zA-Z0-9_]+)\((.*?)\)/gi,
-      (match, toolName, args) => {
-        let displayArgs = args;
-        try {
-          if (args.startsWith('"') || args.startsWith("'")) {
-             displayArgs = args.replace(/^["'](.*)["']$/, '$1');
-          }
-        } catch(e) {}
-        
-        // Strip newlines to guarantee this is processed by ReactMarkdown as inline <code> not block <CodeBlockWithCopy>
-        displayArgs = displayArgs.replace(/\\n|\n/g, ' '); 
-        
-        const friendlyName = toolName === 'search_web' ? 'Web Search' : toolName.replace(/_/g, ' ');
-        // Use bold and code tags (inline elements) instead of blockquotes to avoid ReactDOM nested <p> errors
-        return `**âš¡ Agent Action: ${friendlyName}** \`${displayArgs}\``;
-      }
-    );
+    let processed = stripInternalLeakage(stripContinueMarkers(content));
 
     const codePatterns = [
       /^(mkdir|cd|npm|npm run|npm install|git|sudo|apt-get|docker|pip|pip install|python|node|ls|cat|chmod|chown)\s+.+$/i,
@@ -748,9 +884,9 @@ ${processed.trim()}
       (match, url) => {
         try {
           const domain = new URL(url).hostname.replace('www.', '');
-          return `[ðŸ”— ${domain}](${url})`;
+          return `[Source: ${domain}](${url})`;
         } catch {
-          return `[ðŸ”— Source](${url})`;
+          return `[Source](${url})`;
         }
       }
     );
@@ -760,7 +896,7 @@ ${processed.trim()}
       (url) => {
         try {
           const domain = new URL(url).hostname.replace('www.', '');
-          return `[${domain}](${url})`;
+          return `[Source: ${domain}](${url})`;
         } catch {
           return `[Link](${url})`;
         }
@@ -771,7 +907,7 @@ ${processed.trim()}
 
   const formatStreamingForDisplay = (value) => {
     if (!value) return value;
-    return value
+    return stripInternalLeakage(value)
       .replace(/\r\n/g, "\n")
       // Hide raw markdown tokens while streaming; final render still uses full markdown.
       .replace(/(^|\n)\s*#{1,6}\s*/g, "$1")
@@ -808,10 +944,13 @@ ${processed.trim()}
   const followups = Array.isArray(msg.followups) ? msg.followups : [];
   const actionChips = Array.isArray(msg.actionChips) ? msg.actionChips : [];
   const parsedToolResults = useMemo(() => parseToolResults(msg.content || ""), [msg.content]);
+  const trustMeta = msg?.metadata || {};
+  const highStakesMeta = trustMeta?.high_stakes || null;
   const parsedContent = useMemo(() => parseThinkingContent(parsedToolResults.cleanContent || ""), [parsedToolResults.cleanContent]);
   const displayContent = useMemo(() => {
     let cleaned = stripContinueMarkers(parsedContent.displayContent || "");
     cleaned = cleaned.replace(/\[\/?THINKING\]/gi, "").trim();
+    cleaned = stripInternalLeakage(cleaned);
     return cleaned;
   }, [parsedContent.displayContent]);
   const thinkingContent = parsedContent.thinkingContent || "";
@@ -822,6 +961,65 @@ ${processed.trim()}
     if (isStreaming) return displayContent;
     return preprocessContent(displayContent);
   }, [displayContent, isStreaming]);
+  const structuredResponse = useMemo(() => {
+    const isNormalMode = normalizeChatMode(chatMode) === "smart";
+    if (isNormalMode) return null;
+    if (isStreaming) return null;
+
+    const backendStructured = msg?.structured_response;
+    if (backendStructured && typeof backendStructured === "object") {
+      const normalizedSources = Array.isArray(backendStructured.sources)
+        ? backendStructured.sources
+            .map((s) => {
+              if (!s) return null;
+              if (typeof s === "string") return s;
+              return {
+                name: s.name || s.title || "",
+                url: s.url || s.link || "",
+                trust: s.trust ?? null,
+              };
+            })
+            .filter((s) => (typeof s === "string" ? Boolean(s) : Boolean(s?.name || s?.url)))
+        : [];
+
+      const normalizedBlocks = Array.isArray(backendStructured.blocks) ? backendStructured.blocks : [];
+      const tableBlock = normalizedBlocks.find((b) => b?.type === "table");
+
+      return {
+        type: backendStructured.answer_type || "summary",
+        answer: backendStructured.answer || "",
+        keyPoints: Array.isArray(backendStructured.key_points) ? backendStructured.key_points : [],
+        sources: normalizedSources,
+        confidence: typeof backendStructured.confidence === "number" ? backendStructured.confidence : null,
+        confidence_level: backendStructured.confidence_level || null,
+        metadata: backendStructured.metadata || {},
+        blocks: normalizedBlocks,
+        tableMarkdown: tableBlock?.markdown || "",
+        timeline: [],
+        relatedQuestions: followups,
+        hasStructure: Boolean(
+          backendStructured.answer ||
+          (Array.isArray(backendStructured.key_points) && backendStructured.key_points.length) ||
+          normalizedBlocks.length
+        ),
+      };
+    }
+
+    if (!displayContent) return null;
+    return buildResponse(displayContent, {
+      sources,
+      relatedQuestions: followups,
+      meta: { confidence: msg?.intelligence?.confidence },
+    });
+  }, [displayContent, isStreaming, sources, followups, msg?.intelligence?.confidence, msg?.structured_response]);
+  const hasStructuredBlocks = Boolean(Array.isArray(structuredResponse?.blocks) && structuredResponse.blocks.length > 0);
+  const responseConfidence = typeof structuredResponse?.confidence === "number"
+    ? structuredResponse.confidence
+    : (typeof msg?.confidence === "number" ? msg.confidence : null);
+  const responseConfidenceLevel = structuredResponse?.confidence_level || msg?.confidence_level || null;
+  // UX choice: render chat replies as natural text, not forced Answer/Key-Points cards.
+  // Keep structured payload for metadata/followups, but do not switch to structured renderer.
+  const shouldUseStructuredRenderer = false;
 
   const hasVisibleContent = Boolean(displayContent && displayContent.trim().length > 0);
   const indicatorActive = Boolean((isSearching || isGenerating) && !hasVisibleContent && !formattedThinking);
@@ -973,12 +1171,11 @@ ${processed.trim()}
       <div className="flex-1 min-w-0 px-2 lg:px-8 max-w-4xl mx-auto w-full">
 
         <div className="text-white/80 leading-loose text-[15px] font-light font-['Inter',sans-serif]">
-          {(!displayContent && !formattedThinking) && (isSearching || isGenerating) && !msg.agentMeta?.agent_state && (
+          {isLastMessage && (!displayContent && !formattedThinking) && (isSearching || isGenerating) && !msg.agentMeta?.agent_state && (
             <ProcessingIndicator query={msg.searchQuery} showSearch={isSearching} holdFinalStep={holdFinalStep} />
           )}
 
-          {/* Integrated Methodology & Process Card (now at top) */}
-          {chatMode !== "normal" && (
+          {isLastMessage && Array.isArray(msg.executionLog) && msg.executionLog.length > 0 && (
             <AgentMetaBlock
               meta={msg.agentMeta}
               logs={msg.executionLog}
@@ -990,7 +1187,7 @@ ${processed.trim()}
           {parsedToolResults.toolResults.map((result, idx) => (
             <ToolResultCard key={`${result.tool}-${idx}`} result={result} />
           ))}
-          {sources.length > 0 && !showIndicator && !indicatorFade && !ghostSpace && (
+          {sources.length > 0 && !showIndicator && !indicatorFade && !ghostSpace && !shouldUseStructuredRenderer && (
             <SourcesDisplay sources={sources} />
           )}
 
@@ -998,8 +1195,18 @@ ${processed.trim()}
           {msg.intelligence && (
             <IntelligenceBar intelligence={msg.intelligence} isStreaming={isStreaming} />
           )}
+          {!isStreaming && (
+            <ResponseConfidenceBadge confidence={responseConfidence} confidenceLevel={responseConfidenceLevel} />
+          )}
 
-          {displayContent && (() => {
+          {highStakesMeta?.enabled && !isStreaming && (
+            <div className="mb-4 rounded-lg border border-amber-400/25 bg-amber-400/5 p-3 text-xs text-amber-200">
+              <div className="font-medium mb-1">High-Stakes Domain: {String(trustMeta?.domain || "general").replace(/_/g, " ")}</div>
+              <div>{highStakesMeta?.disclaimer || "Verify this response with qualified professionals or official sources."}</div>
+            </div>
+          )}
+
+          {(displayContent || shouldUseStructuredRenderer) && (() => {
             const liveCode = isStreaming ? extractStreamingCodeBlock(displayContent) : null;
             return (
               <div className="relative" data-streaming={isStreaming ? 'true' : undefined}>
@@ -1016,9 +1223,11 @@ ${processed.trim()}
                   ) : (
                     <div className="streaming-plain">{formatStreamingForDisplay(displayContent)}</div>
                   )
+                ) : shouldUseStructuredRenderer ? (
+                  <StructuredResponseRenderer response={structuredResponse} onFollowupClick={onFollowupClick} />
                 ) : (
                   <div className="prose prose-invert max-w-none prose-pre:bg-transparent prose-pre:p-0 prose-pre:m-0 mt-4">
-                    <ReactMarkdown components={MarkdownComponents} remarkPlugins={[remarkGfm]}>
+                    <ReactMarkdown components={MarkdownComponents} remarkPlugins={REMARK_PLUGINS}>
                       {preprocessedDisplay}
                     </ReactMarkdown>
                   </div>
@@ -1085,10 +1294,50 @@ ${processed.trim()}
       </div>
     </div>
   );
-}));
+});
+
+const areMessagePropsEqual = (prevProps, nextProps) => {
+  if (prevProps.index !== nextProps.index) return false;
+  if (prevProps.theme !== nextProps.theme) return false;
+  if (prevProps.chatMode !== nextProps.chatMode) return false;
+  if (prevProps.isLastMessage !== nextProps.isLastMessage) return false;
+  if (prevProps.thinkingVisibility !== nextProps.thinkingVisibility) return false;
+
+  const prevContinue = prevProps.continueMeta;
+  const nextContinue = nextProps.continueMeta;
+  if (!!prevContinue !== !!nextContinue) return false;
+  if (prevContinue && nextContinue) {
+    if (prevContinue.file !== nextContinue.file) return false;
+    if (prevContinue.mode !== nextContinue.mode) return false;
+    if ((prevContinue.lines || 0) !== (nextContinue.lines || 0)) return false;
+  }
+
+  const p = prevProps.msg || {};
+  const n = nextProps.msg || {};
+  if (p === n) return true;
+  return (
+    p.id === n.id &&
+    p.role === n.role &&
+    p.content === n.content &&
+    p.isStreaming === n.isStreaming &&
+    p.isSearching === n.isSearching &&
+    p.isGenerating === n.isGenerating &&
+    p.searchQuery === n.searchQuery &&
+    p.answer === n.answer &&
+    p.schema_version === n.schema_version &&
+    p.answer_type === n.answer_type &&
+    p.intelligence === n.intelligence &&
+    p.agentMeta === n.agentMeta &&
+    p.executionLog === n.executionLog &&
+    p.sources === n.sources &&
+    p.followups === n.followups &&
+    p.actionChips === n.actionChips &&
+    p.metadata === n.metadata &&
+    p.structured_response === n.structured_response &&
+    p.files === n.files
+  );
+};
+
+const MessageComponent = memo(MessageComponentInner, areMessagePropsEqual);
 
 export default MessageComponent;
-
-
-
-

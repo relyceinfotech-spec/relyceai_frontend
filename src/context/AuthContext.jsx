@@ -7,7 +7,7 @@ import React, {
 } from "react";
 import { onIdTokenChanged } from "firebase/auth";
 import { auth } from "../utils/firebaseConfig";
-import { fetchUserProfile as fetchUserProfileApi } from "../utils/api";
+import { API_BASE_URL, fetchUserProfile as fetchUserProfileApi } from "../utils/api";
 import { createUserProfile } from "../features/users/services/userService";
 import {
   getUserMembership,
@@ -23,6 +23,7 @@ export function useAuth() {
 // Cache for user profiles to prevent repeated fetches
 const userProfileCache = new Map();
 const CACHE_DURATION = 5 * 60 * 1000; // 5 minutes
+const MEMBERSHIP_EXPIRY_GRACE_HOURS = 48;
 
 // This is the single, correct AuthProvider component
 export default function AuthProvider({ children }) {
@@ -40,6 +41,7 @@ export default function AuthProvider({ children }) {
   const backendInitRetryTimer = useRef(null);
   const backendInitUserId = useRef(null);
   const tokenCheckInFlight = useRef(false);
+  const uniqueIdInitAttempted = useRef(new Set());
 
   const fetchUserProfile = async (uid, skipExpensiveOperations = false) => {
     try {
@@ -50,34 +52,38 @@ export default function AuthProvider({ children }) {
         const userData = payload.user;
 
         if (!userData.uniqueUserId) {
-          console.log(
-            "[AuthContext] uniqueUserId missing, triggering backend init...",
-          );
-          try {
-            const token = await auth.currentUser?.getIdToken(true);
-            const apiUrl =
-              import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
-            const initResponse = await fetch(`${apiUrl}/users/init`, {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${token}`,
-                "Content-Type": "application/json",
-              },
-            });
+          const alreadyAttempted = uniqueIdInitAttempted.current.has(uid);
+          if (!alreadyAttempted) {
+            uniqueIdInitAttempted.current.add(uid);
+            console.log(
+              "[AuthContext] uniqueUserId missing, triggering backend init...",
+            );
+            try {
+              const token = await auth.currentUser?.getIdToken(true);
+              const initResponse = await fetch(`${API_BASE_URL}/users/init`, {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${token}`,
+                  "Content-Type": "application/json",
+                },
+              });
 
-            if (initResponse.ok) {
-              const initData = await initResponse.json().catch(() => null);
-              if (initData?.uniqueUserId) {
-                userData.uniqueUserId = initData.uniqueUserId;
-                console.log(
-                  "[AuthContext] Assigned uniqueUserId:",
-                  initData.uniqueUserId,
-                );
+              if (initResponse.ok) {
+                const initData = await initResponse.json().catch(() => null);
+                if (initData?.uniqueUserId) {
+                  userData.uniqueUserId = initData.uniqueUserId;
+                  console.log(
+                    "[AuthContext] Assigned uniqueUserId:",
+                    initData.uniqueUserId,
+                  );
+                }
               }
+            } catch (initErr) {
+              console.warn("[AuthContext] Backend init call failed:", initErr);
             }
-          } catch (initErr) {
-            console.warn("[AuthContext] Backend init call failed:", initErr);
           }
+        } else {
+          uniqueIdInitAttempted.current.delete(uid);
         }
 
         if (!skipExpensiveOperations) {
@@ -92,22 +98,25 @@ export default function AuthProvider({ children }) {
           membershipData = userData.membership || null;
         }
 
-        // Inline UI Fallback for immediate degradation before backend sync
+        // Keep frontend expiry behavior aligned with backend grace logic.
         if (membershipData && membershipData.plan !== 'free' && membershipData.expiryDate) {
-            if (new Date(membershipData.expiryDate) < new Date()) {
-                membershipData.plan = 'free';
-                membershipData.planName = 'Free';
-                membershipData.status = 'expired';
-                membershipData.isExpired = true;
-                
-                // Mute this on the user profile as well so UI elements tracking userData directly match
-                if (userData.membership) {
-                    userData.membership.plan = 'free';
-                    userData.membership.planName = 'Free';
-                    userData.membership.status = 'expired';
-                    userData.membership.isExpired = true;
-                }
+          const expiryMs = new Date(membershipData.expiryDate).getTime();
+          if (!Number.isNaN(expiryMs)) {
+            const graceCutoffMs = expiryMs + MEMBERSHIP_EXPIRY_GRACE_HOURS * 60 * 60 * 1000;
+            if (Date.now() > graceCutoffMs) {
+              membershipData.plan = 'free';
+              membershipData.planName = 'Free';
+              membershipData.status = 'expired';
+              membershipData.isExpired = true;
+
+              if (userData.membership) {
+                userData.membership.plan = 'free';
+                userData.membership.planName = 'Free';
+                userData.membership.status = 'expired';
+                userData.membership.isExpired = true;
+              }
             }
+          }
         }
 
         userProfileCache.set(cacheKey, {
@@ -213,9 +222,7 @@ export default function AuthProvider({ children }) {
 
       try {
         const token = await authUser.getIdToken();
-        const apiUrl =
-          import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
-        const response = await fetch(`${apiUrl}/users/init`, {
+        const response = await fetch(`${API_BASE_URL}/users/init`, {
           method: "POST",
           headers: {
             Authorization: `Bearer ${token}`,
@@ -274,6 +281,7 @@ export default function AuthProvider({ children }) {
         }
         if (!authUser) {
           backendInitUserId.current = null;
+          uniqueIdInitAttempted.current.clear();
           backendInitDone.current = false;
           backendInitInFlight.current = false;
           backendInitAttempt.current = 0;
@@ -295,6 +303,7 @@ export default function AuthProvider({ children }) {
         setLoading(false);
       } else {
         backendInitUserId.current = null;
+        uniqueIdInitAttempted.current.clear();
         backendInitDone.current = false;
         backendInitInFlight.current = false;
         backendInitAttempt.current = 0;
@@ -357,3 +366,7 @@ export default function AuthProvider({ children }) {
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
+
+
+
+

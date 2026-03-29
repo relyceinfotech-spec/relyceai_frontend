@@ -16,7 +16,8 @@ import {
     Crown,
     Activity,
     Home,
-    LayoutDashboard
+    LayoutDashboard,
+    FileText
 } from 'lucide-react';
 import { useAuth } from '../../../context/AuthContext';
 
@@ -37,6 +38,7 @@ const AdminSidebar = memo(({ isSuperAdmin, isCollapsed, toggleSidebar, mobileOpe
 
     const superAdminMenuItems = [
         { id: 'overview', label: 'Overview', icon: BarChart },
+        { id: 'analytics', label: 'AI Control', icon: Activity },
         { id: 'users', label: 'User Management', icon: Users },
         { id: 'payments', label: 'Payments & Revenue', icon: DollarSign },
         { id: 'coupons', label: 'Coupons', icon: CreditCard },
@@ -46,11 +48,11 @@ const AdminSidebar = memo(({ isSuperAdmin, isCollapsed, toggleSidebar, mobileOpe
     ];
 
     const adminMenuItems = [
-        { id: 'overview', label: 'Overview', icon: TrendingUp },
+        { id: 'overview', label: 'Usage Dashboard', icon: TrendingUp },
+        { id: 'monitoring', label: 'Chat Monitoring', icon: Activity },
+        { id: 'alerts', label: 'Alerts Panel', icon: BarChart },
         { id: 'users', label: 'User Management', icon: Users },
-        { id: 'payments', label: 'Payments & Revenue', icon: DollarSign },
-        { id: 'coupons', label: 'Coupons', icon: CreditCard },
-        { id: 'analytics', label: 'Analytics', icon: BarChart }
+        { id: 'logs', label: 'Basic Logs', icon: FileText }
     ];
 
     // Logic to determine which menu to show

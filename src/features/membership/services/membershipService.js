@@ -7,17 +7,18 @@ import {
 import { db, auth } from '../../../utils/firebaseConfig';
 import { API_BASE_URL } from '../../../utils/api';
 import { fetchUserProfile } from '../../../utils/api';
+import { PLAN_DEFINITIONS } from '../planCatalog';
 
 /**
  * Membership Plans Configuration
  */
 export const MEMBERSHIP_PLANS = {
     FREE: {
-        id: 'free',
+        id: PLAN_DEFINITIONS.free.id,
         name: 'Free Plan',
-        monthlyPrice: 0,
-        yearlyPrice: 0,
-        duration: 'unlimited',
+        monthlyPrice: PLAN_DEFINITIONS.free.monthlyPrice,
+        yearlyPrice: PLAN_DEFINITIONS.free.yearlyPrice,
+        duration: PLAN_DEFINITIONS.free.duration,
         features: {
             chatLimit: 10,
             fileUploadLimit: 10,
@@ -25,12 +26,25 @@ export const MEMBERSHIP_PLANS = {
             monthlyQuota: 100
         }
     },
+    STARTER: {
+        id: PLAN_DEFINITIONS.starter.id,
+        name: 'Starter Plan',
+        monthlyPrice: PLAN_DEFINITIONS.starter.monthlyPrice,
+        yearlyPrice: PLAN_DEFINITIONS.starter.yearlyPrice,
+        duration: PLAN_DEFINITIONS.starter.duration,
+        features: {
+            chatLimit: 150,
+            fileUploadLimit: 25,
+            fileSizeLimitMB: 25,
+            monthlyQuota: 1500
+        }
+    },
     PLUS: {
-        id: 'plus',
+        id: PLAN_DEFINITIONS.plus.id,
         name: 'Plus Plan',
-        monthlyPrice: 999,
-        yearlyPrice: 9999,
-        duration: 'unlimited',
+        monthlyPrice: PLAN_DEFINITIONS.plus.monthlyPrice,
+        yearlyPrice: PLAN_DEFINITIONS.plus.yearlyPrice,
+        duration: PLAN_DEFINITIONS.plus.duration,
         features: {
             chatLimit: 500,
             fileUploadLimit: 100,
@@ -39,16 +53,31 @@ export const MEMBERSHIP_PLANS = {
         }
     },
     PRO: {
-        id: 'pro',
+        id: PLAN_DEFINITIONS.pro.id,
         name: 'Pro Plan',
-        monthlyPrice: 1999,
-        yearlyPrice: 19999,
-        duration: 'unlimited',
+        monthlyPrice: PLAN_DEFINITIONS.pro.monthlyPrice,
+        yearlyPrice: PLAN_DEFINITIONS.pro.yearlyPrice,
+        duration: PLAN_DEFINITIONS.pro.duration,
         features: {
             chatLimit: 1000,
             fileUploadLimit: 250,
             fileSizeLimitMB: 250,
             monthlyQuota: 10000,
+            prioritySupport: true,
+            advancedFeatures: true
+        }
+    },
+    BUSINESS: {
+        id: PLAN_DEFINITIONS.business.id,
+        name: 'Business Plan',
+        monthlyPrice: PLAN_DEFINITIONS.business.monthlyPrice,
+        yearlyPrice: PLAN_DEFINITIONS.business.yearlyPrice,
+        duration: PLAN_DEFINITIONS.business.duration,
+        features: {
+            chatLimit: Infinity,
+            fileUploadLimit: Infinity,
+            fileSizeLimitMB: 500,
+            monthlyQuota: Infinity,
             prioritySupport: true,
             advancedFeatures: true
         }

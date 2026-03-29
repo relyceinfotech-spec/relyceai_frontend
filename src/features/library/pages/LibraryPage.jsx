@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { useAuth } from '../../../context/AuthContext';
 import { storage, db } from '../../../utils/firebaseConfig';
+import { API_BASE_URL } from '../../../utils/api';
 import { ref, uploadBytesResumable, getDownloadURL, listAll, deleteObject } from 'firebase/storage';
 import {
     collection, doc, addDoc, setDoc, updateDoc, deleteDoc, getDocs,
@@ -368,14 +369,19 @@ export default function LibraryPage() {
         await addMessage('user', text, activeSessionId);
 
         try {
-            const response = await fetch('/api/library/chat', {
+            const response = await fetch(`${API_BASE_URL}/chat`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ userId: storageUserId, query: text, mode: chatMode })
+                body: JSON.stringify({
+                    message: text,
+                    user_id: storageUserId,
+                    session_id: activeSessionId,
+                    chat_mode: chatMode === 'business' ? 'agent' : 'smart'
+                })
             });
 
             const data = await response.json();
-            await addMessage('assistant', data.response || data.answer || 'Could not process request.', activeSessionId);
+            await addMessage('assistant', data.response || data.answer || data.detail || 'Could not process request.', activeSessionId);
         } catch (error) {
             console.error('Chat error:', error);
             await addMessage('assistant', 'System Error: Backend connection failed.', activeSessionId);
@@ -641,3 +647,5 @@ export default function LibraryPage() {
         </div>
     );
 }
+
+

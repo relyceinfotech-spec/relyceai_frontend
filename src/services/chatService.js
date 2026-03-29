@@ -1,6 +1,7 @@
 import { collection, query, orderBy, onSnapshot, addDoc, serverTimestamp, doc, updateDoc } from 'firebase/firestore';
 import { db } from '../utils/firebaseConfig';
 import { sendChatMessage, checkBackendHealth, fetchPersonalities, createPersonality, updatePersonality, deletePersonality, fetchUserProfile } from '../utils/api';
+import { normalizeAssistantRole } from '../hooks/chat/useChatUtils';
 
 class ChatService {
   static async addMessage(userId, sessionId, role, content, files = []) {
@@ -33,8 +34,13 @@ class ChatService {
     const q = query(messagesRef, orderBy('timestamp', 'asc'));
 
     return onSnapshot(q, (snapshot) => {
-      callback(snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() })));
-    }, () => callback([]));
+      callback(snapshot.docs.map(doc => {
+        const data = doc.data();
+        return { id: doc.id, ...data, role: normalizeAssistantRole(data?.role) };
+      }));
+    }, (error) => {
+      console.error('ChatService.subscribeToMessages snapshot error:', error);
+    });
   }
 
   static async updateSessionName(userId, sessionId, newName) {
@@ -63,7 +69,7 @@ class ChatService {
     }
   }
 
-  static async sendMessage(message, sessionId, userId, chatMode = 'standard', personality = null) {
+  static async sendMessage(message, sessionId, userId, chatMode = 'smart', personality = null) {
     try {
       const result = await sendChatMessage(message, sessionId, userId, chatMode, personality);
       return result;
@@ -122,3 +128,4 @@ class ChatService {
 }
 
 export default ChatService;
+

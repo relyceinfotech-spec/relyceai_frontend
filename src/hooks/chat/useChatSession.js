@@ -1,6 +1,6 @@
 import { useEffect, useCallback, useRef } from 'react';
 import ChatService from '../../services/chatService';
-import { isElementScrollable } from './useChatUtils';
+import { isElementScrollable, isAssistantLikeRole } from './useChatUtils';
 
 // In-memory message cache - ChatGPT style
 const messageCache = new Map();
@@ -62,17 +62,7 @@ export default function useChatSession({
         setPreviousSessionId(currentSessionId);
 
         const unsubscribe = ChatService.subscribeToMessages(userId, currentSessionId, (firebaseMessages) => {
-            // DEDUPE: Filter out duplicate bot messages (same content in a row)
-            const dedupedMessages = [];
-            for (let i = 0; i < firebaseMessages.length; i++) {
-                const msg = firebaseMessages[i];
-                const prev = dedupedMessages[dedupedMessages.length - 1];
-                // Skip if same role and same content as previous (duplicate)
-                if (prev && prev.role === msg.role && prev.content === msg.content) {
-                    continue; // Skip duplicate
-                }
-                dedupedMessages.push(msg);
-            }
+            const dedupedMessages = Array.isArray(firebaseMessages) ? firebaseMessages : [];
             
             let shouldShowTyping = false;
             if (dedupedMessages.length > 0) {
@@ -80,7 +70,7 @@ export default function useChatSession({
                 if (lastMessage.role === 'user') {
                     let hasBotResponse = false;
                     for (let i = dedupedMessages.length - 1; i >= 0; i--) {
-                        if (dedupedMessages[i].role === 'bot') { hasBotResponse = true; break; }
+                        if (isAssistantLikeRole(dedupedMessages[i].role)) { hasBotResponse = true; break; }
                         else if (dedupedMessages[i].role === 'user' && i !== dedupedMessages.length - 1) break;
                     }
                     if (!hasBotResponse) shouldShowTyping = true;

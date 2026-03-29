@@ -7,12 +7,10 @@ class ShareService {
       throw new Error('No chat to share!');
     }
 
-    const shareId = `${userId}_${sessionId}_${Date.now()}`;
+    const shareId = crypto.randomUUID();
     
     const sharedChatData = {
       shareId,
-      userId,
-      sessionId,
       messages: messages.map(msg => ({
         role: msg.role,
         content: msg.content,

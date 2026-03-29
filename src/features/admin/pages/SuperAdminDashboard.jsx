@@ -1,12 +1,32 @@
 import React, { useState, useEffect, useCallback } from 'react';
 import { useAuth } from '../../../context/AuthContext';
-import { useNavigate, useLocation, useParams } from 'react-router-dom';
+import { useLocation } from 'react-router-dom';
 import toast from 'react-hot-toast';
-import { getAllUsers, updateUserRole, updateUserMembership, getUserStatistics, getPaymentAnalytics, getAllCoupons, saveCoupon, deleteCoupon, toggleCouponStatus, deleteUser, savePricingChanges as savePricingToFirestore, updateCoupon } from '../services/adminDashboard';
+import {
+  getAllUsers,
+  updateUserRole,
+  updateUserMembership,
+  getUserStatistics,
+  getPaymentAnalytics,
+  getAllCoupons,
+  saveCoupon,
+  deleteCoupon,
+  toggleCouponStatus,
+  deleteUser,
+  savePricingChanges as savePricingToFirestore,
+  updateCoupon,
+  getCurrentPricing,
+  getHighStakesMetrics,
+  getHighStakesThresholds,
+  updateHighStakesThresholds,
+  getAgentDebugInsights,
+  getAgentModeCheck,
+  updateAgentDebugConfig,
+  createAdaptiveSnapshot,
+  rollbackAdaptiveSnapshot,
+} from '../services/adminDashboard';
 import { MEMBERSHIP_PLANS } from '../services/adminDashboard';
 import AdminLayout from '../layouts/AdminLayout';
-
-// Components
 import SuperAdminOverviewTab from '../components/SuperAdminOverviewTab';
 import SuperAdminUsersTab from '../components/SuperAdminUsersTab';
 import SuperAdminPaymentsTab from '../components/SuperAdminPaymentsTab';
@@ -14,33 +34,24 @@ import SuperAdminCouponsTab from '../components/SuperAdminCouponsTab';
 import SuperAdminPricingTab from '../components/SuperAdminPricingTab';
 import SuperAdminRolesTab from '../components/SuperAdminRolesTab';
 import SettingsTab from '../components/SettingsTab';
-import { Settings } from 'lucide-react';
+import AnalyticsTab from '../components/AnalyticsTab';
+import AdminCapabilityMatrix from '../components/AdminCapabilityMatrix';
 
 const SuperAdminDashboard = () => {
   const { currentUser: user } = useAuth();
-  const navigate = useNavigate();
   const location = useLocation();
 
-  // Tab handling from URL
   const getTabFromPath = () => {
-    const path = location.pathname;
-    const parts = path.split('/');
-    // Check if this is a /boss or /super route
-    // parts[0] is empty, parts[1] is 'boss' or 'super', parts[2] is the tab
-    if (parts[1] === 'boss' || parts[1] === 'super') {
-      return parts[2] || 'overview';
-    }
+    const parts = location.pathname.split('/');
+    if (parts[1] === 'boss' || parts[1] === 'super') return parts[2] || 'overview';
     return 'overview';
   };
 
   const [activeTab, setActiveTab] = useState(getTabFromPath());
-
   useEffect(() => {
     setActiveTab(getTabFromPath());
-  }, [location]);
+  }, [location.pathname]);
 
-  // States
-  const [users, setUsers] = useState([]);
   const [admins, setAdmins] = useState([]);
   const [superadmins, setSuperadmins] = useState([]);
   const [searchEmail, setSearchEmail] = useState('');
@@ -54,154 +65,119 @@ const SuperAdminDashboard = () => {
   const [editingPrices, setEditingPrices] = useState(false);
   const [tempPrices, setTempPrices] = useState({});
   const [coupons, setCoupons] = useState([]);
+  const [hsRange, setHsRange] = useState('24h');
+  const [highStakesMetrics, setHighStakesMetrics] = useState({});
+  const [agentDebugInsights, setAgentDebugInsights] = useState({});
+  const [hsThresholds, setHsThresholds] = useState({
+    source_fail_spike: 0.30,
+    low_confidence_spike: 0.40,
+    recency_fail_spike: 0.25,
+  });
   const [newCoupon, setNewCoupon] = useState({
     code: '',
     monthlyDiscount: '',
     yearlyDiscount: '',
     type: 'percentage',
     description: '',
-    active: true
+    active: true,
   });
 
   const fetchAllData = useCallback(async () => {
-    if (!user) return;
-
+    if (!user?.uid) return;
     try {
       setLoading(true);
-      const [usersData, statsData, paymentData, couponData] = await Promise.all([
+      const [usersData, statsData, paymentData, couponData, currentPricing] = await Promise.all([
         getAllUsers(user.uid),
         getUserStatistics(user.uid),
         getPaymentAnalytics(user.uid),
-        getAllCoupons(user.uid)
+        getAllCoupons(user.uid),
+        getCurrentPricing(),
+      ]);
+
+      const [hsMetricsResult, hsThresholdsResult, debugInsightsResult] = await Promise.allSettled([
+        getHighStakesMetrics(hsRange),
+        getHighStakesThresholds(),
+        getAgentDebugInsights(hsRange, 25),
       ]);
 
       setAllUsers(usersData);
       setStatistics(statsData);
       setPaymentAnalytics(paymentData);
       setCoupons(couponData);
+      setTempPrices(currentPricing);
+      setHighStakesMetrics(hsMetricsResult.status === 'fulfilled' ? (hsMetricsResult.value || {}) : {});
+      setHsThresholds(hsThresholdsResult.status === 'fulfilled' ? (hsThresholdsResult.value || hsThresholds) : hsThresholds);
+      setAgentDebugInsights(debugInsightsResult.status === 'fulfilled' ? (debugInsightsResult.value || {}) : {});
 
-      const superAdminUsers = usersData.filter(user => user.role === 'superadmin');
-      const adminUsers = usersData.filter(user => user.role === 'admin');
-
-      setUsers(superAdminUsers);
+      const superAdminUsers = usersData.filter((x) => x.role === 'superadmin');
+      const adminUsers = usersData.filter((x) => x.role === 'admin');
       setAdmins(adminUsers);
       setSuperadmins(superAdminUsers);
-
-      // Initialize temp prices with current membership plans
-      setTempPrices(MEMBERSHIP_PLANS);
     } catch (error) {
-      console.error('Error fetching data:', error);
+      console.error('Error fetching super admin data:', error);
       toast.error('Failed to load data');
     } finally {
       setLoading(false);
     }
-  }, [user?.uid]);
+  }, [user?.uid, hsRange]);
 
   useEffect(() => {
-    if (user?.uid) {
-        fetchAllData();
-    }
+    if (user?.uid) fetchAllData();
   }, [fetchAllData, user?.uid]);
 
-  // Optimized search with debouncing
   const handleSearchInput = (email) => {
     setSearchEmail(email);
-
-    if (searchTimeout) {
-      clearTimeout(searchTimeout);
-    }
-
+    if (searchTimeout) clearTimeout(searchTimeout);
     if (!email.trim()) {
       setSearchResults([]);
       return;
     }
-
-    const newTimeout = setTimeout(() => {
-      performSearch(email);
-    }, 500);
-
-    setSearchTimeout(newTimeout);
-  };
-
-  const performSearch = (email) => {
-    if (!email.trim()) {
-      setSearchResults([]);
-      return;
-    }
-
-    setIsSearching(true);
-    try {
-      const results = allUsers.filter(user =>
-        user.email && user.email.toLowerCase().includes(email.toLowerCase())
-      );
-
-      setSearchResults(results);
-
-      if (results.length === 0) {
-        toast.error('No user found with this email');
+    const timeout = setTimeout(() => {
+      setIsSearching(true);
+      try {
+        const q = email.toLowerCase();
+        const results = allUsers.filter((u) => (u.email || '').toLowerCase().includes(q));
+        setSearchResults(results);
+        if (results.length === 0) toast.error('No user found with this email');
+      } finally {
+        setIsSearching(false);
       }
-    } catch (error) {
-      console.error('Error searching user:', error);
-      toast.error('Search failed');
-    } finally {
-      setIsSearching(false);
-    }
+    }, 350);
+    setSearchTimeout(timeout);
   };
 
   const searchUserByEmail = () => {
-    performSearch(searchEmail);
+    handleSearchInput(searchEmail);
   };
 
-  // Change user role
   const changeUserRole = async (userId, newRole, currentRole) => {
     try {
       if (newRole === currentRole) {
         toast.error('User already has this role');
         return;
       }
-
       await updateUserRole(userId, newRole, user.uid);
       toast.success(`User role updated to ${newRole}`);
       await fetchAllData();
-
-      if (searchResults.length > 0) {
-        setSearchResults(prev => prev.map(user =>
-          user.id === userId ? { ...user, role: newRole } : user
-        ));
-      }
     } catch (error) {
       console.error('Error updating user role:', error);
       toast.error('Failed to update user role');
     }
   };
 
-  // Change user plan
   const changeUserPlan = async (userId, newPlan) => {
     try {
       await updateUserMembership(userId, newPlan, 'monthly', null, user.uid);
       toast.success(`User plan updated to ${newPlan}`);
       await fetchAllData();
-
-      if (searchResults.length > 0) {
-        setSearchResults(prev => prev.map(user =>
-          user.id === userId ? {
-            ...user,
-            membership: { ...user.membership, plan: newPlan }
-          } : user
-        ));
-      }
     } catch (error) {
       console.error('Error updating user plan:', error);
       toast.error('Failed to update user plan');
     }
   };
 
-  // Delete user
   const handleDeleteUser = async (userId) => {
-    if (!window.confirm('Are you sure you want to delete this user? This action cannot be undone.')) {
-      return;
-    }
-
+    if (!window.confirm('Are you sure you want to delete this user? This action cannot be undone.')) return;
     try {
       await deleteUser(userId, user.uid);
       toast.success('User deleted successfully');
@@ -212,117 +188,90 @@ const SuperAdminDashboard = () => {
     }
   };
 
-  // Save pricing changes
   const savePricingChanges = async () => {
     try {
-      const processedPrices = { ...tempPrices };
-      
-      // Calculate discount percentage based on manual yearly price entry
-      Object.keys(processedPrices).forEach(planId => {
-        const plan = processedPrices[planId];
+      const processed = { ...tempPrices };
+      Object.keys(processed).forEach((planId) => {
+        const plan = processed[planId];
         if (plan.monthly && plan.yearly) {
-          const theoreticalYearly = plan.monthly * 12;
-          const discount = theoreticalYearly > 0 ? ((theoreticalYearly - plan.yearly) / theoreticalYearly) * 100 : 0;
-          processedPrices[planId] = { 
-            ...plan, 
-            yearlyDiscountPercentage: parseFloat(discount.toFixed(1))
-          };
+          const base = plan.monthly * 12;
+          const discount = base > 0 ? ((base - plan.yearly) / base) * 100 : 0;
+          processed[planId] = { ...plan, yearlyDiscountPercentage: parseFloat(discount.toFixed(1)) };
         }
       });
-
-      await savePricingToFirestore(processedPrices, user.uid);
-      
-      // Update local state
-      Object.keys(processedPrices).forEach(planId => {
-        if (MEMBERSHIP_PLANS[planId]) {
-          MEMBERSHIP_PLANS[planId] = { ...MEMBERSHIP_PLANS[planId], ...processedPrices[planId] };
-        }
+      await savePricingToFirestore(processed, user.uid);
+      Object.keys(processed).forEach((planId) => {
+        if (MEMBERSHIP_PLANS[planId]) MEMBERSHIP_PLANS[planId] = { ...MEMBERSHIP_PLANS[planId], ...processed[planId] };
       });
-      
-      toast.success('Pricing updated successfully');
       setEditingPrices(false);
+      toast.success('Pricing updated successfully');
     } catch (error) {
       console.error('Error saving pricing:', error);
       toast.error('Failed to save pricing');
     }
   };
 
-  // Add new coupon
   const addCoupon = async () => {
     if (!newCoupon.code || (!newCoupon.monthlyDiscount && !newCoupon.yearlyDiscount) || !newCoupon.description) {
       toast.error('Please fill all required coupon fields');
       return;
     }
-
     try {
-      const couponData = {
+      const payload = {
         code: newCoupon.code.toUpperCase(),
         monthlyDiscount: newCoupon.monthlyDiscount ? parseFloat(newCoupon.monthlyDiscount) : 0,
         yearlyDiscount: newCoupon.yearlyDiscount ? parseFloat(newCoupon.yearlyDiscount) : 0,
         type: newCoupon.type,
         description: newCoupon.description,
         active: newCoupon.active,
-        createdAt: new Date()
+        createdAt: new Date(),
       };
-
-      const result = await saveCoupon(couponData, user.uid);
-      if (result.success) {
-        const updatedCoupons = await getAllCoupons(user.uid);
-        setCoupons(updatedCoupons);
-        setNewCoupon({
-          code: '',
-          monthlyDiscount: '',
-          yearlyDiscount: '',
-          type: 'percentage',
-          description: '',
-          active: true
-        });
-        toast.success('Coupon added successfully');
-      } else {
-        toast.error(result.message);
+      const result = await saveCoupon(payload, user.uid);
+      if (!result.success) {
+        toast.error(result.message || 'Failed to add coupon');
+        return;
       }
+      const updated = await getAllCoupons(user.uid);
+      setCoupons(updated);
+      setNewCoupon({ code: '', monthlyDiscount: '', yearlyDiscount: '', type: 'percentage', description: '', active: true });
+      toast.success('Coupon added successfully');
     } catch (error) {
       console.error('Error adding coupon:', error);
       toast.error('Failed to add coupon');
     }
   };
 
-  // Toggle coupon status
   const handleToggleCouponStatus = async (id, currentStatus) => {
     try {
       const result = await toggleCouponStatus(id, !currentStatus, user.uid);
-      if (result.success) {
-        const updatedCoupons = await getAllCoupons(user.uid);
-        setCoupons(updatedCoupons);
-        toast.success('Coupon status updated');
-      } else {
-        toast.error(result.message);
+      if (!result.success) {
+        toast.error(result.message || 'Failed to update coupon');
+        return;
       }
+      const updated = await getAllCoupons(user.uid);
+      setCoupons(updated);
+      toast.success('Coupon status updated');
     } catch (error) {
       console.error('Error updating coupon status:', error);
       toast.error('Failed to update coupon status');
     }
   };
 
-  // Update coupon
   const handleUpdateCoupon = async (id, updateData) => {
     try {
-      // Validate required fields
       if (!updateData.code || (!updateData.monthlyDiscount && !updateData.yearlyDiscount)) {
         toast.error('Code and at least one discount type are required');
-        return;
-      }
-      
-      const result = await updateCoupon(id, updateData, user.uid);
-      if (result.success) {
-        const updatedCoupons = await getAllCoupons(user.uid);
-        setCoupons(updatedCoupons);
-        toast.success('Coupon updated successfully');
-        return true;
-      } else {
-        toast.error(result.message);
         return false;
       }
+      const result = await updateCoupon(id, updateData, user.uid);
+      if (!result.success) {
+        toast.error(result.message || 'Failed to update coupon');
+        return false;
+      }
+      const updated = await getAllCoupons(user.uid);
+      setCoupons(updated);
+      toast.success('Coupon updated successfully');
+      return true;
     } catch (error) {
       console.error('Error updating coupon:', error);
       toast.error('Failed to update coupon');
@@ -330,60 +279,112 @@ const SuperAdminDashboard = () => {
     }
   };
 
-  // Delete coupon
   const handleDeleteCoupon = async (id) => {
-    if (!window.confirm('Are you sure you want to delete this coupon?')) {
-      return;
-    }
-
+    if (!window.confirm('Are you sure you want to delete this coupon?')) return;
     try {
       const result = await deleteCoupon(id, user.uid);
-      if (result.success) {
-        const updatedCoupons = await getAllCoupons(user.uid);
-        setCoupons(updatedCoupons);
-        toast.success('Coupon deleted');
-      } else {
-        toast.error(result.message);
+      if (!result.success) {
+        toast.error(result.message || 'Failed to delete coupon');
+        return;
       }
+      const updated = await getAllCoupons(user.uid);
+      setCoupons(updated);
+      toast.success('Coupon deleted');
     } catch (error) {
       console.error('Error deleting coupon:', error);
       toast.error('Failed to delete coupon');
     }
   };
 
-  const getPageTitle = (tab) => {
-    switch (tab) {
-      case 'overview': return 'Super Admin Overview';
-      case 'users': return 'User Management';
-      case 'analytics': return 'System Analytics';
-      case 'payments': return 'Transactions & Revenue';
-      case 'coupons': return 'Coupon Management';
-      case 'membership': return 'Membership Plans';
-      case 'roles': return 'Role Assignments';
-      case 'settings': return 'System Settings';
-      default: return 'Dashboard';
+  const handleSaveHsThresholds = async (nextThresholds) => {
+    try {
+      const saved = await updateHighStakesThresholds(nextThresholds);
+      setHsThresholds(saved || nextThresholds);
+      toast.success('High-stakes thresholds updated');
+    } catch (error) {
+      console.error('Failed to update thresholds:', error);
+      toast.error('Failed to update thresholds');
     }
   };
 
-  // Animation variants
+  const handleSaveAgentDebugConfig = async (nextConfig) => {
+    try {
+      const saved = await updateAgentDebugConfig(nextConfig || {});
+      setAgentDebugInsights((prev) => ({ ...(prev || {}), config: saved || nextConfig }));
+      toast.success('Agent debug config updated');
+    } catch (error) {
+      console.error('Failed to update debug config:', error);
+      toast.error('Failed to update debug config');
+    }
+  };
+
+  const handleAgentModeCheck = async (input, requestedMode) => {
+    return await getAgentModeCheck(input, requestedMode);
+  };
+
+  const handleCreateAdaptiveSnapshot = async (label = 'manual') => {
+    const result = await createAdaptiveSnapshot(label);
+    const fresh = await getAgentDebugInsights(hsRange, 25);
+    setAgentDebugInsights(fresh || {});
+    toast.success(`Adaptive snapshot created (${result?.snapshot_id || 'ok'})`);
+    return result;
+  };
+
+  const handleRollbackAdaptiveSnapshot = async () => {
+    const result = await rollbackAdaptiveSnapshot();
+    const fresh = await getAgentDebugInsights(hsRange, 25);
+    setAgentDebugInsights(fresh || {});
+    toast.success(result?.restored ? 'Adaptive snapshot rollback applied' : 'No snapshot to rollback');
+    return result;
+  };
+
+  const getPageTitle = (tab) => {
+    if (tab === 'overview') return 'Super Admin Overview';
+    if (tab === 'analytics') return 'Core AI Control';
+    if (tab === 'users') return 'User Management';
+    if (tab === 'payments') return 'Transactions & Revenue';
+    if (tab === 'coupons') return 'Coupon Management';
+    if (tab === 'membership') return 'Membership Plans';
+    if (tab === 'roles') return 'Role Assignments';
+    if (tab === 'settings') return 'System Settings';
+    return 'Super Dashboard';
+  };
+
   const tabVariants = {
     hidden: { opacity: 0, y: 10 },
     visible: { opacity: 1, y: 0 },
-    exit: { opacity: 0, y: -10 }
+    exit: { opacity: 0, y: -10 },
   };
 
   return (
     <AdminLayout isSuperAdmin={true} title={getPageTitle(activeTab)}>
+      <AdminCapabilityMatrix currentRole="superadmin" />
+
       {activeTab === 'overview' && (
         <SuperAdminOverviewTab
           tabVariants={tabVariants}
-          statistics={{
-            ...statistics,
-            monthlyRevenue: paymentAnalytics?.analytics?.totalRevenue || 0
-          }}
+          statistics={{ ...statistics, monthlyRevenue: paymentAnalytics?.analytics?.totalRevenue || 0 }}
           allUsers={allUsers}
           admins={admins}
           superadmins={superadmins}
+        />
+      )}
+
+      {activeTab === 'analytics' && (
+        <AnalyticsTab
+          tabVariants={tabVariants}
+          statistics={statistics}
+          users={allUsers}
+          highStakesMetrics={highStakesMetrics}
+          agentDebugInsights={agentDebugInsights}
+          hsRange={hsRange}
+          onHsRangeChange={setHsRange}
+          hsThresholds={hsThresholds}
+          onHsThresholdsSave={handleSaveHsThresholds}
+          onAgentDebugConfigSave={handleSaveAgentDebugConfig}
+          onAgentModeCheck={handleAgentModeCheck}
+          onAdaptiveSnapshot={handleCreateAdaptiveSnapshot}
+          onAdaptiveRollback={handleRollbackAdaptiveSnapshot}
         />
       )}
 

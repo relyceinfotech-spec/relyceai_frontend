@@ -3,6 +3,7 @@ import { Mic, MicOff, Plus, Upload, Search, X, FileText, Image, Square, Globe, S
 import { uploadFile } from '../../../utils/api.js';
 import { uploadChatFileToFirebase } from '../../files/services/fileService.js';
 import { useAuth } from '../../../context/AuthContext.jsx';
+import { normalizeChatMode, isAgentPremiumMode, resolveRuntimeChatMode } from '../utils/chatMode.js';
 
 export default function ChatInput({ onSend, onFileUpload, onFileUploadComplete, botTyping, onStop, sessionId, chatMode, canUseFullAgent = false, membershipPlan = 'free' }) {
     const theme = 'dark';
@@ -31,6 +32,7 @@ export default function ChatInput({ onSend, onFileUpload, onFileUploadComplete, 
     const textareaRef = useRef(null);
     const inputContainerRef = useRef(null);
     const prevTextRef = useRef('');
+    const effectiveMode = normalizeChatMode(chatMode);
 
     useEffect(() => {
         if (!('webkitSpeechRecognition' in window) && !('SpeechRecognition' in window)) {
@@ -83,7 +85,7 @@ export default function ChatInput({ onSend, onFileUpload, onFileUploadComplete, 
     };
 
     const shouldPromptReactChecklist = (value) => {
-        if (chatMode !== 'normal') return false;
+        if (effectiveMode !== 'smart') return false;
         if (isContinuationPayload(value)) return false;
         return isReactRequest(value);
     };
@@ -121,8 +123,17 @@ export default function ChatInput({ onSend, onFileUpload, onFileUploadComplete, 
     };
 
     const handleSend = () => {
-        if (!text.trim() && uploadedFiles.length === 0) return;
-        if (botTyping) return;
+        const hasInput = Boolean(text.trim()) || uploadedFiles.length > 0;
+        if (!hasInput && !botTyping) return;
+        if (botTyping && !hasInput) {
+            handleStop();
+            return;
+        }
+        if (botTyping && hasInput && onStop) {
+            // If user already typed a new prompt, stop current run first,
+            // then continue with the new send flow below.
+            onStop();
+        }
 
         if (text.length > 5000) {
             console.warn("Message too long (max 5000 chars)");
@@ -136,7 +147,8 @@ export default function ChatInput({ onSend, onFileUpload, onFileUploadComplete, 
             isWebSearch: isWebSearchActive
         };
 
-        if (chatMode === 'agent' && !canUseFullAgent) {
+        const runtimeModeForGate = payload.isWebSearch ? 'research_pro' : resolveRuntimeChatMode(chatMode, payload.text);
+        if (isAgentPremiumMode(runtimeModeForGate) && !canUseFullAgent) {
             if (isContinuationPayload(payload.text)) {
                 alert('Agent continuation is available on Plus, Pro, or Business plans.');
                 return;
@@ -152,7 +164,8 @@ export default function ChatInput({ onSend, onFileUpload, onFileUploadComplete, 
         }
 
         if (shouldPromptReactChecklist(payload.text) && !showReactChecklist) {
-            finalizeSend(payload);
+            setPendingSend(payload);
+            setShowReactChecklist(true);
             return;
         }
 
@@ -395,28 +408,13 @@ export default function ChatInput({ onSend, onFileUpload, onFileUploadComplete, 
                   }
                 }
                 @media (min-width: 769px) {
-                  .chat-input-container { width: 100% !important; max-width: 900px !important; }
+                  .chat-input-container { width: 100% !important; max-width: 980px !important; }
                 }
             `}</style>
 
-            {chatMode === 'normal' && (
-                <div className="w-full max-w-[900px] mx-auto mb-2 chat-input-container text-[10px] uppercase tracking-widest text-zinc-500">
-                    Mode: Normal - fast, single-tool responses.
-                </div>
-            )}
-            {chatMode === 'business' && (
-                <div className="w-full max-w-[900px] mx-auto mb-2 chat-input-container text-[10px] uppercase tracking-widest text-cyan-300/80">
-                    Mode: Business - structured answers with verification.
-                </div>
-            )}
-            {chatMode === 'agent' && (
-                <div className="w-full max-w-[900px] mx-auto mb-2 chat-input-container text-[10px] uppercase tracking-widest text-amber-300/90">
-                    {canUseFullAgent ? 'Mode: Agent - full tools + automation.' : 'Mode: Agent Trial - 2 messages/chat, continuation disabled.'}
-                </div>
-            )}
             {uploadError && (
-                <div className="w-full max-w-[900px] mx-auto mb-2 chat-input-container">
-                    <div className="p-3 border bg-red-900/10 border-red-500/20 text-red-400 text-xs tracking-wide uppercase flex items-center justify-between">
+                <div className="w-full max-w-[980px] mx-auto mb-2 chat-input-container">
+                    <div className="p-3 border bg-red-900/10 border-red-500/20 text-red-400 text-xs tracking-wide flex items-center justify-between rounded-xl">
                         <span>{uploadError}</span>
                         <button onClick={() => setUploadError(null)} className="text-red-400 hover:text-red-300">
                             <X size={14} />
@@ -426,11 +424,11 @@ export default function ChatInput({ onSend, onFileUpload, onFileUploadComplete, 
             )}
             
             {uploadedFiles.length > 0 && (
-                <div className="w-full max-w-[900px] mx-auto mb-2 chat-input-container">
-                    <div className="p-3 bg-[#0a0d14] border border-white/10">
+                <div className="w-full max-w-[980px] mx-auto mb-2 chat-input-container">
+                    <div className="p-3 bg-[#12141b] border border-white/10 rounded-xl">
                         <div className="flex flex-wrap gap-2">
                             {uploadedFiles.map((file) => (
-                                <div key={file.id} className="flex items-center gap-3 px-3 py-2 border bg-white/5 border-white/10 text-xs">
+                                <div key={file.id} className="flex items-center gap-3 px-3 py-2 border bg-white/[0.03] border-white/10 text-xs rounded-lg">
                                     <div className="text-white/50">{getFileIcon(file.type)}</div>
                                     <div className="flex-1 min-w-0"><div className="font-mono truncate text-white/80" title={file.name}>{file.name}</div></div>
                                     <button onClick={() => removeFile(file.id)} className="transition-all text-white/40 hover:text-white" title="Remove file"><X size={14} /></button>
@@ -444,28 +442,28 @@ export default function ChatInput({ onSend, onFileUpload, onFileUploadComplete, 
             {/* Main Input Area */}
             <div 
                 ref={inputContainerRef}
-                className={`relative flex flex-col w-full max-w-[900px] mx-auto bg-[#0a0d14] border transition-all duration-300 rounded-[2px] ${
+                className={`relative flex flex-col w-full max-w-[980px] mx-auto bg-[#1a1d26]/95 border transition-all duration-300 rounded-[30px] backdrop-blur-xl ${
                 isFocused
-                  ? 'border-white/30 shadow-2xl'
-                  : 'border-white/10 hover:border-white/20 shadow-lg'
+                  ? 'border-white/35 shadow-[0_18px_48px_rgba(0,0,0,0.45)]'
+                  : 'border-white/15 hover:border-white/25 shadow-[0_12px_34px_rgba(0,0,0,0.35)]'
                 }`}
             >
                 
                 {/* Web Search/Deep Toggle (Moved Inside Top) */}
-                {chatMode === 'normal' && (
+                {effectiveMode === 'smart' && (
                 <div className="flex items-center px-4 pt-3 pb-1 gap-2">
                     <button
                         type="button"
                         onClick={() => setIsWebSearchActive(!isWebSearchActive)}
-                        className={`flex items-center gap-1.5 px-3 py-1.5 border border-transparent transition-all duration-300 text-[10px] font-mono tracking-widest uppercase ${
+                        className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full border border-transparent transition-all duration-300 text-[10px] tracking-wide ${
                           isWebSearchActive
-                            ? 'bg-white/10 text-white border-white/20'
-                            : 'text-zinc-500 hover:bg-white/5 hover:text-white'
+                            ? 'bg-cyan-400/10 text-cyan-200 border-cyan-300/30'
+                            : 'text-zinc-400 hover:bg-white/5 hover:text-zinc-100'
                         }`}
                         title="Toggle Web Search"
                     >
                     <Globe size={12} className={isWebSearchActive ? 'text-white' : ''} />
-                    <span>{isWebSearchActive ? 'WEB: ON' : 'WEB SEARCH'}</span>
+                    <span>{isWebSearchActive ? 'Web On' : 'Web Search'}</span>
                     </button>
                 </div>
                 )}
@@ -495,14 +493,14 @@ export default function ChatInput({ onSend, onFileUpload, onFileUploadComplete, 
                     </div>
                 )}
 
-                <div className="flex items-center px-2 sm:px-4 py-2 sm:py-3 w-full">
+                <div className="flex items-center px-3 sm:px-4 py-2.5 sm:py-3.5 w-full gap-1">
                     {/* File Upload Button (Desktop) */}
                     <div className="relative static" ref={dropdownRef}>
-                        <button onClick={() => setDropdownOpen(prev => !prev)} className="group p-2 transition-all text-white/50 hover:text-white hover:bg-white/5" title="Add content">
+                        <button onClick={() => setDropdownOpen(prev => !prev)} className="group p-2.5 rounded-full transition-all text-white/50 hover:text-white hover:bg-white/8" title="Add content">
                             <Plus size={16} className="transition-transform group-hover:rotate-90" />
                         </button>
                         {dropdownOpen && (
-                            <div className="absolute bottom-[calc(100%+8px)] left-0 shadow-2xl py-2 w-56 z-50 bg-[#0a0d14] border border-white/10 flex flex-col items-start animate-in fade-in slide-in-from-bottom-2 duration-200">
+                            <div className="absolute bottom-[calc(100%+8px)] left-0 shadow-2xl py-2 w-56 z-50 bg-[#171923] border border-white/10 rounded-xl flex flex-col items-start animate-in fade-in slide-in-from-bottom-2 duration-200">
                                 <button onClick={() => { fileInputRef.current.click(); setDropdownOpen(false); }} className="w-full flex items-center gap-3 px-4 py-3 transition-colors text-left text-[10px] font-mono uppercase tracking-widest hover:bg-white/5 text-zinc-300 hover:text-white border-b border-white/5">
                                     <Upload size={14} />
                                     <span>Upload Document</span>
@@ -523,7 +521,7 @@ export default function ChatInput({ onSend, onFileUpload, onFileUploadComplete, 
                             onKeyDown={e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
                             placeholder="Ask anything..."
                             maxLength={5000}
-                            className="w-full text-sm md:text-base outline-none border-none custom-textarea-scrollbar leading-relaxed no-resize-handle bg-transparent text-zinc-100 placeholder-zinc-600 italic disabled:opacity-60 font-light"
+                            className="w-full text-sm md:text-base outline-none border-none custom-textarea-scrollbar leading-relaxed no-resize-handle bg-transparent text-zinc-100 placeholder-zinc-500 disabled:opacity-60 font-light"
                             style={{
                                 minHeight: '44px',
                                 height: '44px',
@@ -540,27 +538,28 @@ export default function ChatInput({ onSend, onFileUpload, onFileUploadComplete, 
                     </div>
                     
                     <button 
-                        onClick={botTyping ? handleStop : handleSend} 
+                        onClick={handleSend} 
                         disabled={showReactChecklist || (!text.trim() && uploadedFiles.length === 0 && !botTyping)} 
-                        className={`ml-2 flex-shrink-0 flex items-center justify-center w-[40px] h-[40px] border border-white/10 transition-all duration-300 ${
-                          botTyping
+                        className={`ml-2 flex-shrink-0 flex items-center justify-center w-[42px] h-[42px] rounded-full border border-white/10 transition-all duration-300 ${
+                          (botTyping && (!text.trim() && uploadedFiles.length === 0))
                             ? 'bg-white/10 border-white/30 text-white hover:bg-white/20'
                             : (!text.trim() && uploadedFiles.length === 0) || showReactChecklist
                               ? 'bg-transparent text-white/20 cursor-not-allowed hidden sm:flex'
-                              : 'bg-white text-black hover:bg-zinc-200'
+                              : 'bg-gradient-to-br from-zinc-300 to-zinc-500 text-black hover:from-white hover:to-zinc-300'
                         }`}
                     >
-                        {botTyping ? <Square size={14} className="fill-current" /> : <Send size={14} className="ml-0.5" />}
+                        {(botTyping && (!text.trim() && uploadedFiles.length === 0))
+                          ? <Square size={14} className="fill-current" />
+                          : <Send size={14} className="ml-0.5" />}
                     </button>
                 </div>
 
                 <input type="file" ref={fileInputRef} onChange={handleFileChange} accept="application/pdf,.txt,.md,.csv,.json,.docx" className="hidden" />
             </div>
 
-            <p className="text-[11px] font-sans tracking-wide text-center mt-4 px-4 leading-relaxed text-zinc-500 pb-2">
+            <p className="text-[11px] font-sans tracking-wide text-center mt-3 px-4 leading-relaxed text-zinc-500 pb-1">
                 Relyce AI can make mistakes. Consider verifying important information.
             </p>
         </div>
     );
 }
-
