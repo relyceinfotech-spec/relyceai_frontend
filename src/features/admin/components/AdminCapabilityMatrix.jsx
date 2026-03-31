@@ -5,7 +5,10 @@ const ROWS = [
   { feature: 'Usage Dashboard', admin: true, superadmin: true },
   { feature: 'Chat Monitoring', admin: true, superadmin: true },
   { feature: 'Alerts Panel', admin: true, superadmin: true },
+  { feature: 'AI Debug (Read-only)', admin: true, superadmin: true },
   { feature: 'User Management', admin: true, superadmin: true },
+  { feature: 'Bulk Ops & Export', admin: true, superadmin: true },
+  { feature: 'Audit Timeline', admin: true, superadmin: true },
   { feature: 'Basic Logs', admin: true, superadmin: true },
   { feature: 'Adaptive Learning Control', admin: false, superadmin: true },
   { feature: 'Mode + Role Tuning', admin: false, superadmin: true },
@@ -74,4 +77,3 @@ const AdminCapabilityMatrix = ({ currentRole = 'admin' }) => {
 };
 
 export default AdminCapabilityMatrix;
-

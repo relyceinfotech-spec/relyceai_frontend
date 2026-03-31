@@ -33,6 +33,37 @@ async function fetchWithTimeout(url, options = {}, timeoutMs = 30000) {
   }
 }
 
+async function classifyGovernanceAlert(response) {
+  const status = Number(response?.status || 0);
+  let payload = null;
+  try {
+    payload = await response.clone().json();
+  } catch {
+    payload = null;
+  }
+
+  const detail = payload?.detail ?? payload?.error ?? payload?.message ?? '';
+  const detailText = typeof detail === 'string' ? detail : JSON.stringify(detail || {});
+  const normalized = detailText.toLowerCase();
+
+  if (status === 429) {
+    return { type: '429', message: detailText || 'Rate limit enforced.' };
+  }
+  if (status === 402 || normalized.includes('spend_limit')) {
+    return { type: 'spend_guard', message: detailText || 'Spend guard triggered.' };
+  }
+  if (status === 503) {
+    if (normalized.includes('system_unavailable') || normalized.includes('circuit')) {
+      return { type: '503', message: detailText || 'Circuit breaker active.' };
+    }
+    if (normalized.includes('timed out') || normalized.includes('timeout')) {
+      return { type: 'deps_timeout', message: detailText || 'Dependency timeout during request gating.' };
+    }
+    return { type: 'service_unavailable', message: detailText || 'Service temporarily unavailable.' };
+  }
+  return { type: 'default', message: detailText || `HTTP ${status}` };
+}
+
 /**
  * Generic fetch wrapper for FastAPI endpoints
  */
@@ -211,12 +242,9 @@ export async function* streamChatMessage(message, sessionId, userId, chatMode = 
 
     if (!submitResp.ok) {
       if ([429, 503, 402].includes(submitResp.status)) {
-        let type = "default";
-        if (submitResp.status === 429) type = "429";
-        if (submitResp.status === 503) type = "503";
-        if (submitResp.status === 402) type = "spend_guard";
-        window.dispatchEvent(new CustomEvent("governance_alert", { detail: { type } }));
-        throw new Error(`GOVERNANCE_BLOCK_${type}`);
+        const alert = await classifyGovernanceAlert(submitResp);
+        window.dispatchEvent(new CustomEvent("governance_alert", { detail: alert }));
+        throw new Error(`GOVERNANCE_BLOCK_${alert.type}`);
       }
       throw new Error(`HTTP ${submitResp.status}`);
     }
@@ -251,12 +279,9 @@ export async function* streamChatMessage(message, sessionId, userId, chatMode = 
 
     if (!response.ok) {
       if ([429, 503, 402].includes(response.status)) {
-        let type = "default";
-        if (response.status === 429) type = "429";
-        if (response.status === 503) type = "503";
-        if (response.status === 402) type = "spend_guard";
-        window.dispatchEvent(new CustomEvent("governance_alert", { detail: { type } }));
-        throw new Error(`GOVERNANCE_BLOCK_${type}`);
+        const alert = await classifyGovernanceAlert(response);
+        window.dispatchEvent(new CustomEvent("governance_alert", { detail: alert }));
+        throw new Error(`GOVERNANCE_BLOCK_${alert.type}`);
       }
       throw new Error(`HTTP ${response.status}`);
     }

@@ -34,6 +34,16 @@ export const GovernanceBanner = () => {
       desc: "Agent dependencies are stabilizing. Execution paused.",
       color: "border-red-500/50 text-red-500 bg-red-500/10"
     },
+    'deps_timeout': {
+      title: "Dependency Timeout",
+      desc: alert.message || "A backend dependency timed out. Please retry.",
+      color: "border-orange-500/50 text-orange-400 bg-orange-500/10"
+    },
+    'service_unavailable': {
+      title: "Service Unavailable",
+      desc: alert.message || "Service is temporarily unavailable. Please retry shortly.",
+      color: "border-red-500/50 text-red-400 bg-red-500/10"
+    },
     'spend_guard': {
       title: "Spend Guard Triggered",
       desc: "Usage budget approached. Tasks limited to low-cost ops.",

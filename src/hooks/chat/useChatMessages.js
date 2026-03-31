@@ -117,6 +117,15 @@ export default function useChatMessages({ core, currentSessionId, userId, onMess
         const isSearchTool = toolLower.includes('search') || toolLower.includes('news') || toolLower.includes('weather') || toolLower.includes('finance');
         const isReadTool = toolLower.includes('summarize_url') || toolLower.includes('web_fetch') || toolLower.includes('extract');
         const prettyTopic = topic || sourceTitle;
+        const rawNoiseText = String(
+            payload.error || payload.message || payload.detail || payload.label || topic || ''
+        ).toLowerCase();
+        if (
+            (rawNoiseText.includes('robots.txt') || rawNoiseText.includes('does not allow automated scraping')) &&
+            (isReadTool || rawNoiseText.includes('read failed') || rawNoiseText.includes('read '))
+        ) {
+            return null;
+        }
         const callKey = [nodeId, toolLower, argsPreview || prettyTopic].filter(Boolean).join('|').toLowerCase();
 
         const makeEntry = (title, detail = '', kind = 'progress', statusValue = 'running', extra = {}) => {
@@ -420,7 +429,10 @@ export default function useChatMessages({ core, currentSessionId, userId, onMess
                     ...msg,
                     content: (() => {
                         const streamed = (msg.content || '') + pendingChunk + chunk;
-                        const structuredAnswer = msg?.structured_response?.answer || finalAnswerRef.current;
+                        const structuredAnswer =
+                            msg?.structured_response?.response ||
+                            msg?.structured_response?.answer ||
+                            finalAnswerRef.current;
                         if (streamed.trim()) return streamed;
                         if (structuredAnswer) return sanitizeCasualReply(structuredAnswer);
                         return streamed;
@@ -654,7 +666,7 @@ export default function useChatMessages({ core, currentSessionId, userId, onMess
                 onFinalAnswer: (structured) => {
                     const botMsgId = streamingMessageIdRef.current;
                     if (!botMsgId || !structured || typeof structured !== 'object') return;
-                    const resolvedFinal = String(structured?.answer || '').trim();
+                    const resolvedFinal = String(structured?.response || structured?.answer || '').trim();
                     if (resolvedFinal) {
                         finalAnswerRef.current = resolvedFinal;
                     }
@@ -1066,7 +1078,7 @@ useEffect(() => {
                                   : { message: String(chunk.payload || '').trim() };
                                 const currentLogs = msg.executionLog || [];
                                 const nextLogs = appendExecutionLog(currentLogs, payload);
-                                const infoAnswer = String(payload?.answer || '').trim();
+                                const infoAnswer = String(payload?.response || payload?.answer || '').trim();
                                 if (infoAnswer) {
                                   finalAnswerRef.current = infoAnswer;
                                 }
@@ -1090,7 +1102,7 @@ useEffect(() => {
                         }));
                                         } else if (chunk.type === 'final_answer') {
                         const structured = chunk.payload || null;
-                        const resolvedFinal = String(structured?.answer || '').trim();
+                        const resolvedFinal = String(structured?.response || structured?.answer || '').trim();
                         finalAnswerRef.current = resolvedFinal;
                         setMessages(prev => prev.map(msg => {
                             if (msg.id !== streamingMessageIdRef.current) return msg;

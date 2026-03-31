@@ -8,6 +8,9 @@ import AdminUsageTab from '../components/AdminUsageTab';
 import AdminMonitoringTab from '../components/AdminMonitoringTab';
 import AdminAlertsTab from '../components/AdminAlertsTab';
 import AdminLogsTab from '../components/AdminLogsTab';
+import AdminAIDebugTab from '../components/AdminAIDebugTab';
+import AdminBulkExportTab from '../components/AdminBulkExportTab';
+import AdminAuditTimelineTab from '../components/AdminAuditTimelineTab';
 import AdminCapabilityMatrix from '../components/AdminCapabilityMatrix';
 import {
   getAllUsers,
@@ -15,6 +18,10 @@ import {
   getUserStatistics,
   getPaymentAnalytics,
   getAdminOpsInsights,
+  getAdminAgentDebugReadonly,
+  getAuditTimeline,
+  runBulkMembershipUpdate,
+  exportUsersReport,
   deleteUser,
 } from '../services/adminDashboard';
 
@@ -34,6 +41,8 @@ const AdminDashboard = () => {
   const [statistics, setStatistics] = useState({});
   const [paymentAnalytics, setPaymentAnalytics] = useState({ payments: [], analytics: {} });
   const [opsInsights, setOpsInsights] = useState({});
+  const [aiDebugReadonly, setAiDebugReadonly] = useState({});
+  const [auditTimeline, setAuditTimeline] = useState([]);
   const [loading, setLoading] = useState(true);
   const [searchTerm, setSearchTerm] = useState('');
   const [currentPage, setCurrentPage] = useState(1);
@@ -50,11 +59,13 @@ const AdminDashboard = () => {
     if (!user?.uid) return;
     try {
       setLoading(true);
-      const [usersRes, statsRes, paymentRes, opsRes] = await Promise.allSettled([
+      const [usersRes, statsRes, paymentRes, opsRes, debugRes, auditRes] = await Promise.allSettled([
         getAllUsers(user.uid),
         getUserStatistics(user.uid),
         getPaymentAnalytics(user.uid),
         getAdminOpsInsights('24h', 40),
+        getAdminAgentDebugReadonly('24h', 30),
+        getAuditTimeline({ limit: 80 }),
       ]);
 
       const usersData = usersRes.status === 'fulfilled' ? usersRes.value : [];
@@ -65,11 +76,28 @@ const AdminDashboard = () => {
       setStatistics(statsRes.status === 'fulfilled' ? (statsRes.value || {}) : {});
       setPaymentAnalytics(paymentRes.status === 'fulfilled' ? (paymentRes.value || { payments: [], analytics: {} }) : { payments: [], analytics: {} });
       setOpsInsights(opsRes.status === 'fulfilled' ? (opsRes.value || {}) : {});
+      setAiDebugReadonly(debugRes.status === 'fulfilled' ? (debugRes.value || {}) : {});
+      setAuditTimeline(auditRes.status === 'fulfilled' ? (auditRes.value || []) : []);
     } catch (error) {
       console.error('Error loading admin dashboard data:', error);
       toast.error('Failed to load admin dashboard data');
     } finally {
       setLoading(false);
+    }
+  }, [user?.uid]);
+
+  // Re-read with proper destructuring for added calls
+  const refreshExtendedPanels = useCallback(async () => {
+    if (!user?.uid) return;
+    try {
+      const [debugRes, auditRes] = await Promise.allSettled([
+        getAdminAgentDebugReadonly('24h', 30),
+        getAuditTimeline({ limit: 80 }),
+      ]);
+      setAiDebugReadonly(debugRes.status === 'fulfilled' ? (debugRes.value || {}) : {});
+      setAuditTimeline(auditRes.status === 'fulfilled' ? (auditRes.value || []) : []);
+    } catch {
+      // no-op
     }
   }, [user?.uid]);
 
@@ -151,7 +179,10 @@ const AdminDashboard = () => {
     if (tab === 'overview') return 'Usage Dashboard';
     if (tab === 'monitoring') return 'Chat Monitoring';
     if (tab === 'alerts') return 'Alerts Panel';
+    if (tab === 'ai-debug') return 'AI Debug (Read-only)';
     if (tab === 'users') return 'User Management';
+    if (tab === 'bulk-export') return 'Bulk & Export';
+    if (tab === 'audit') return 'Audit Timeline';
     if (tab === 'logs') return 'Basic Logs';
     return 'Admin Dashboard';
   };
@@ -231,6 +262,42 @@ const AdminDashboard = () => {
           indexOfFirstUser={indexOfFirstUser}
           indexOfLastUser={indexOfLastUser}
           filteredUsersLength={filteredUsers.length}
+        />
+      )}
+
+      {activeTab === 'ai-debug' && <AdminAIDebugTab debugData={aiDebugReadonly} />}
+
+      {activeTab === 'bulk-export' && (
+        <AdminBulkExportTab
+          onBulkMembershipUpdate={async (payload) => {
+            const data = await runBulkMembershipUpdate(payload);
+            await loadAdminData();
+            return data;
+          }}
+          onExportUsersCsv={async () => {
+            await exportUsersReport('csv');
+            toast.success('Users CSV exported');
+          }}
+          onExportUsersJson={async () => {
+            const data = await exportUsersReport('json');
+            const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+            const url = window.URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `users-export-${new Date().toISOString().slice(0, 10)}.json`;
+            document.body.appendChild(a);
+            a.click();
+            a.remove();
+            window.URL.revokeObjectURL(url);
+            toast.success('Users JSON exported');
+          }}
+        />
+      )}
+
+      {activeTab === 'audit' && (
+        <AdminAuditTimelineTab
+          rows={auditTimeline}
+          onRefresh={refreshExtendedPanels}
         />
       )}
 

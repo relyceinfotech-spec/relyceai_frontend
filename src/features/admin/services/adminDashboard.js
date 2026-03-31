@@ -598,6 +598,107 @@ export const rollbackAdaptiveSnapshot = async () => {
   return data?.data || {};
 };
 
+export const getAdminAgentDebugReadonly = async (range = '24h', limit = 25) => {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) throw new Error('Not authenticated');
+
+  const response = await fetch(
+    `${API_BASE_URL}/admin/agent-debug-readonly?range=${encodeURIComponent(range)}&limit=${encodeURIComponent(limit)}`,
+    {
+      method: 'GET',
+      headers: { 'Authorization': `Bearer ${token}` },
+    }
+  );
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || 'Failed to load read-only AI debug data');
+  }
+
+  const data = await response.json();
+  return data?.data || {};
+};
+
+export const getAuditTimeline = async ({ limit = 80, action = '', actor_uid = '', target_uid = '' } = {}) => {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) throw new Error('Not authenticated');
+  const params = new URLSearchParams();
+  params.set('limit', String(limit));
+  if (action) params.set('action', String(action));
+  if (actor_uid) params.set('actor_uid', String(actor_uid));
+  if (target_uid) params.set('target_uid', String(target_uid));
+
+  const response = await fetch(`${API_BASE_URL}/admin/audit-logs?${params.toString()}`, {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${token}` },
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || 'Failed to load audit timeline');
+  }
+  const data = await response.json();
+  return data?.items || [];
+};
+
+export const runBulkMembershipUpdate = async ({ target_uids = [], plan, billing_cycle = 'monthly' }) => {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) throw new Error('Not authenticated');
+
+  const response = await fetch(`${API_BASE_URL}/admin/membership/bulk-update`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Authorization': `Bearer ${token}`
+    },
+    body: JSON.stringify({
+      target_uids: Array.isArray(target_uids) ? target_uids : [],
+      plan: String(plan || 'free'),
+      billing_cycle: String(billing_cycle || 'monthly'),
+    }),
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || 'Failed to run bulk membership update');
+  }
+  return await response.json();
+};
+
+const _downloadBlob = (blob, filename) => {
+  const url = window.URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = filename;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  window.URL.revokeObjectURL(url);
+};
+
+export const exportUsersReport = async (format = 'csv') => {
+  const token = await auth.currentUser?.getIdToken();
+  if (!token) throw new Error('Not authenticated');
+
+  const response = await fetch(`${API_BASE_URL}/admin/export/users?format=${encodeURIComponent(format)}`, {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${token}` },
+  });
+
+  if (!response.ok) {
+    const error = await response.json().catch(() => ({}));
+    throw new Error(error.detail || 'Failed to export users');
+  }
+
+  if (String(format).toLowerCase() === 'json') {
+    return await response.json();
+  }
+
+  const blob = await response.blob();
+  _downloadBlob(blob, `users-export-${new Date().toISOString().slice(0, 10)}.csv`);
+  return { success: true };
+};
+
 
 
 

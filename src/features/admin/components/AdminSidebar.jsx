@@ -15,6 +15,7 @@ import {
     ChevronRight,
     Crown,
     Activity,
+    SlidersHorizontal,
     Home,
     LayoutDashboard,
     FileText
@@ -39,6 +40,7 @@ const AdminSidebar = memo(({ isSuperAdmin, isCollapsed, toggleSidebar, mobileOpe
     const superAdminMenuItems = [
         { id: 'overview', label: 'Overview', icon: BarChart },
         { id: 'analytics', label: 'AI Control', icon: Activity },
+        { id: 'runtime', label: 'Runtime Control', icon: SlidersHorizontal },
         { id: 'users', label: 'User Management', icon: Users },
         { id: 'payments', label: 'Payments & Revenue', icon: DollarSign },
         { id: 'coupons', label: 'Coupons', icon: CreditCard },
@@ -51,7 +53,10 @@ const AdminSidebar = memo(({ isSuperAdmin, isCollapsed, toggleSidebar, mobileOpe
         { id: 'overview', label: 'Usage Dashboard', icon: TrendingUp },
         { id: 'monitoring', label: 'Chat Monitoring', icon: Activity },
         { id: 'alerts', label: 'Alerts Panel', icon: BarChart },
+        { id: 'ai-debug', label: 'AI Debug', icon: Activity },
         { id: 'users', label: 'User Management', icon: Users },
+        { id: 'bulk-export', label: 'Bulk & Export', icon: Package },
+        { id: 'audit', label: 'Audit Timeline', icon: Shield },
         { id: 'logs', label: 'Basic Logs', icon: FileText }
     ];
 

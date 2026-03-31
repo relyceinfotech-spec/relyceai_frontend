@@ -35,6 +35,7 @@ import SuperAdminPricingTab from '../components/SuperAdminPricingTab';
 import SuperAdminRolesTab from '../components/SuperAdminRolesTab';
 import SettingsTab from '../components/SettingsTab';
 import AnalyticsTab from '../components/AnalyticsTab';
+import SuperAdminRuntimeControlTab from '../components/SuperAdminRuntimeControlTab';
 import AdminCapabilityMatrix from '../components/AdminCapabilityMatrix';
 
 const SuperAdminDashboard = () => {
@@ -341,6 +342,7 @@ const SuperAdminDashboard = () => {
   const getPageTitle = (tab) => {
     if (tab === 'overview') return 'Super Admin Overview';
     if (tab === 'analytics') return 'Core AI Control';
+    if (tab === 'runtime') return 'Live Runtime Control';
     if (tab === 'users') return 'User Management';
     if (tab === 'payments') return 'Transactions & Revenue';
     if (tab === 'coupons') return 'Coupon Management';
@@ -385,6 +387,15 @@ const SuperAdminDashboard = () => {
           onAgentModeCheck={handleAgentModeCheck}
           onAdaptiveSnapshot={handleCreateAdaptiveSnapshot}
           onAdaptiveRollback={handleRollbackAdaptiveSnapshot}
+        />
+      )}
+
+      {activeTab === 'runtime' && (
+        <SuperAdminRuntimeControlTab
+          config={agentDebugInsights?.config || {}}
+          onSaveConfig={handleSaveAgentDebugConfig}
+          onSnapshot={handleCreateAdaptiveSnapshot}
+          onRollback={handleRollbackAdaptiveSnapshot}
         />
       )}
 
